@@ -1,0 +1,9 @@
+{
+  "name": "NetMap - Network Intelligence Mapper",
+  "short_name": "NetMap",
+  "description": "Visualize IP networks and map CIDR blocks",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e"
+}
