@@ -52,36 +52,51 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (ips.length > 50) {
+    if (ips.length > 500) {
       return NextResponse.json(
-        { error: "Maximum 50 IPs per request" },
+        { error: "Maximum 500 IPs per request" },
         { status: 400 }
       );
     }
 
     const ipRegex =
       /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
-    const validIps = ips.filter((ip) => ipRegex.test(ip.trim()));
+    const validIps = [...new Set(ips.map((ip) => ip.trim()).filter((ip) => ipRegex.test(ip)))];
 
     if (validIps.length === 0) {
       return NextResponse.json(
-        { error: "No valid IPv4 addresses provided" },
+        { error: "No valid IPv4 addresses found in the provided data" },
         { status: 400 }
       );
     }
 
-    // ip-api.com supports batch queries (up to 100) at /batch
-    const batchResponse = await fetch("http://ip-api.com/batch?fields=66846719", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(validIps.map((ip) => ({ query: ip.trim() }))),
-    });
-
-    if (!batchResponse.ok) {
-      throw new Error(`ip-api returned ${batchResponse.status}`);
+    // ip-api.com supports batch queries up to 100 per call, so we chunk
+    const CHUNK_SIZE = 100;
+    const chunks: string[][] = [];
+    for (let i = 0; i < validIps.length; i += CHUNK_SIZE) {
+      chunks.push(validIps.slice(i, i + CHUNK_SIZE));
     }
 
-    const batchData: IpApiResponse[] = await batchResponse.json();
+    const batchData: IpApiResponse[] = [];
+    for (const chunk of chunks) {
+      const batchResponse = await fetch("http://ip-api.com/batch?fields=66846719", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chunk.map((ip) => ({ query: ip }))),
+      });
+
+      if (!batchResponse.ok) {
+        throw new Error(`ip-api returned ${batchResponse.status}`);
+      }
+
+      const chunkData: IpApiResponse[] = await batchResponse.json();
+      batchData.push(...chunkData);
+
+      // ip-api free tier rate limit: 15 requests/minute, add a small delay between chunks
+      if (chunks.length > 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
 
     const results: LookupResult[] = batchData.map((item) => {
       if (item.status === "fail") {
