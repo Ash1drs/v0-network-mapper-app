@@ -1,141 +1,91 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { DnsRecord, AsnGroup } from "@/lib/network-types";
 
-interface IpApiResponse {
-  status: string;
-  message?: string;
-  query: string;
-  country: string;
-  countryCode: string;
-  region: string;
-  regionName: string;
-  city: string;
-  zip: string;
-  lat: number;
-  lon: number;
-  timezone: string;
-  isp: string;
-  org: string;
-  as: string;
-}
-
-export interface LookupResult {
-  ip: string;
-  org: string;
-  isp: string;
-  asn: string;
-  country: string;
-  countryCode: string;
-  region: string;
-  city: string;
-  lat: number;
-  lon: number;
-  cidr: string;
-  error?: string;
-}
-
-function inferCidr(ip: string, asn: string): string {
-  const parts = ip.split(".");
-  if (parts.length === 4) {
-    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
-  }
-  return `${ip}/32`;
-}
+const GROUP_COLORS = [
+  "#22d3ee", "#34d399", "#f59e0b", "#f472b6",
+  "#a78bfa", "#fb923c", "#38bdf8", "#4ade80",
+  "#e879f9", "#facc15", "#2dd4bf", "#f87171",
+  "#818cf8", "#a3e635", "#fbbf24", "#c084fc",
+];
 
 export async function POST(request: NextRequest) {
   try {
-    const { ips } = (await request.json()) as { ips: string[] };
+    const body = await request.json();
+    let records: DnsRecord[] = [];
 
-    if (!ips || !Array.isArray(ips) || ips.length === 0) {
+    // Accept either { records: [...] } or a raw array
+    if (Array.isArray(body)) {
+      records = body;
+    } else if (body.records && Array.isArray(body.records)) {
+      records = body.records;
+    } else {
       return NextResponse.json(
-        { error: "Please provide an array of IP addresses" },
+        { error: "Could not find DNS records in uploaded data. Expected a JSON array of objects with query/answer fields." },
         { status: 400 }
       );
     }
 
-    if (ips.length > 500) {
+    // Validate we actually have the right shape
+    const valid = records.filter(
+      (r) => r.query && r.answer && r.answer_asn !== undefined
+    );
+
+    if (valid.length === 0) {
       return NextResponse.json(
-        { error: "Maximum 500 IPs per request" },
+        { error: "No valid DNS records found. Each record needs at least query, answer, and answer_asn fields." },
         { status: 400 }
       );
     }
 
-    const ipRegex =
-      /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
-    const validIps = [...new Set(ips.map((ip) => ip.trim()).filter((ip) => ipRegex.test(ip)))];
+    // Group by ASN
+    const asnMap = new Map<string, { asName: string; ips: Set<string>; domains: Set<string>; records: DnsRecord[]; riskScores: number[]; totalCount: number }>();
 
-    if (validIps.length === 0) {
-      return NextResponse.json(
-        { error: "No valid IPv4 addresses found in the provided data" },
-        { status: 400 }
-      );
+    for (const r of valid) {
+      const key = r.answer_asn || "unknown";
+      if (!asnMap.has(key)) {
+        asnMap.set(key, {
+          asName: r.answer_as_name || "Unknown",
+          ips: new Set(),
+          domains: new Set(),
+          records: [],
+          riskScores: [],
+          totalCount: 0,
+        });
+      }
+      const group = asnMap.get(key)!;
+      group.ips.add(r.answer);
+      group.domains.add(r.query);
+      group.records.push(r);
+      group.riskScores.push(r.answer_risk_score);
+      group.totalCount += r.count;
     }
 
-    // ip-api.com supports batch queries up to 100 per call, so we chunk
-    const CHUNK_SIZE = 100;
-    const chunks: string[][] = [];
-    for (let i = 0; i < validIps.length; i += CHUNK_SIZE) {
-      chunks.push(validIps.slice(i, i + CHUNK_SIZE));
-    }
+    let colorIndex = 0;
+    const groups: AsnGroup[] = Array.from(asnMap.entries())
+      .sort((a, b) => b[1].ips.size - a[1].ips.size)
+      .map(([asn, data]) => ({
+        asn,
+        asName: data.asName,
+        ips: Array.from(data.ips),
+        domains: Array.from(data.domains),
+        records: data.records,
+        maxRiskScore: Math.max(...data.riskScores),
+        avgRiskScore: Math.round(data.riskScores.reduce((a, b) => a + b, 0) / data.riskScores.length),
+        totalCount: data.totalCount,
+        color: GROUP_COLORS[colorIndex++ % GROUP_COLORS.length],
+      }));
 
-    const batchData: IpApiResponse[] = [];
-    for (const chunk of chunks) {
-      const batchResponse = await fetch("http://ip-api.com/batch?fields=66846719", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(chunk.map((ip) => ({ query: ip }))),
-      });
-
-      if (!batchResponse.ok) {
-        throw new Error(`ip-api returned ${batchResponse.status}`);
-      }
-
-      const chunkData: IpApiResponse[] = await batchResponse.json();
-      batchData.push(...chunkData);
-
-      // ip-api free tier rate limit: 15 requests/minute, add a small delay between chunks
-      if (chunks.length > 1) {
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-    }
-
-    const results: LookupResult[] = batchData.map((item) => {
-      if (item.status === "fail") {
-        return {
-          ip: item.query,
-          org: "",
-          isp: "",
-          asn: "",
-          country: "",
-          countryCode: "",
-          region: "",
-          city: "",
-          lat: 0,
-          lon: 0,
-          cidr: "",
-          error: item.message || "Lookup failed",
-        };
-      }
-
-      return {
-        ip: item.query,
-        org: item.org || item.isp || "Unknown",
-        isp: item.isp || "Unknown",
-        asn: item.as || "",
-        country: item.country || "",
-        countryCode: item.countryCode || "",
-        region: item.regionName || "",
-        city: item.city || "",
-        lat: item.lat || 0,
-        lon: item.lon || 0,
-        cidr: inferCidr(item.query, item.as || ""),
-      };
+    return NextResponse.json({
+      groups,
+      totalRecords: valid.length,
+      uniqueIps: new Set(valid.map((r) => r.answer)).size,
+      uniqueDomains: new Set(valid.map((r) => r.query)).size,
+      uniqueAsns: asnMap.size,
     });
-
-    return NextResponse.json({ results });
   } catch (error) {
-    console.error("IP lookup error:", error);
+    console.error("Parse error:", error);
     return NextResponse.json(
-      { error: "Failed to perform IP lookup" },
+      { error: "Failed to parse uploaded data. Make sure it's valid JSON." },
       { status: 500 }
     );
   }

@@ -5,78 +5,99 @@ import {
   Search,
   Loader2,
   Trash2,
-  Shuffle,
   Upload,
   FileText,
   X,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const SAMPLE_IPS = [
-  "8.8.8.8",
-  "8.8.4.4",
-  "1.1.1.1",
-  "1.0.0.1",
-  "208.67.222.222",
-  "208.67.220.220",
-  "9.9.9.9",
-  "149.112.112.112",
-  "76.76.2.0",
-  "76.76.10.0",
-  "64.233.160.0",
-  "64.233.160.1",
-  "172.217.14.206",
-  "151.101.1.69",
-  "151.101.65.69",
-  "104.16.132.229",
-  "104.16.133.229",
-];
-
-const IP_REGEX =
-  /(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)/g;
-
-function extractIps(text: string): string[] {
-  const matches = text.match(IP_REGEX);
-  if (!matches) return [];
-  return [...new Set(matches)];
-}
+import type { DnsRecord } from "@/lib/network-types";
 
 interface UploadedFile {
   name: string;
-  ipCount: number;
-  ips: string[];
+  recordCount: number;
+  records: DnsRecord[];
 }
 
-interface IpInputPanelProps {
-  onLookup: (ips: string[]) => void;
+interface UploadPanelProps {
+  onAnalyze: (records: DnsRecord[]) => void;
   isLoading: boolean;
-  resultCount: number;
+  stats: { totalRecords: number; uniqueIps: number; uniqueDomains: number; uniqueAsns: number } | null;
 }
 
-export function IpInputPanel({
-  onLookup,
+function tryParseRecords(text: string): DnsRecord[] {
+  // Try direct JSON array
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed.records && Array.isArray(parsed.records)) return parsed.records;
+    if (parsed.data && Array.isArray(parsed.data)) return parsed.data;
+  } catch {
+    // Not valid JSON as-is
+  }
+
+  // Try to find a JSON array embedded in text (e.g. from a PDF extraction)
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    try {
+      // Clean up common PDF artifacts: line breaks inside strings, stray hyphens
+      let cleaned = arrayMatch[0];
+      // Fix line breaks inside JSON string values
+      cleaned = cleaned.replace(/-\n/g, "");
+      cleaned = cleaned.replace(/\n/g, " ");
+      // Fix split words with spaces (e.g. "q u e r y" => "query")
+      cleaned = cleaned.replace(/" q u e r y/g, '"query');
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Still not parseable
+    }
+  }
+
+  // Try line-by-line JSON (JSONL)
+  const lines = text.split("\n").filter((l) => l.trim().startsWith("{"));
+  if (lines.length > 0) {
+    const records: DnsRecord[] = [];
+    for (const line of lines) {
+      try {
+        records.push(JSON.parse(line.replace(/,$/, "")));
+      } catch {
+        // skip bad lines
+      }
+    }
+    if (records.length > 0) return records;
+  }
+
+  return [];
+}
+
+export function UploadPanel({
+  onAnalyze,
   isLoading,
-  resultCount,
-}: IpInputPanelProps) {
+  stats,
+}: UploadPanelProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const [pasteInput, setPasteInput] = useState("");
-  const [showPaste, setShowPaste] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalIps = files.reduce((sum, f) => sum + f.ipCount, 0) +
-    extractIps(pasteInput).length;
+  const totalRecords = files.reduce((sum, f) => sum + f.recordCount, 0);
 
   const processFile = useCallback((file: File) => {
+    setParseError(null);
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      const ips = extractIps(text);
-      if (ips.length > 0) {
+      const records = tryParseRecords(text);
+      if (records.length > 0) {
         setFiles((prev) => [
           ...prev,
-          { name: file.name, ipCount: ips.length, ips },
+          { name: file.name, recordCount: records.length, records },
         ]);
+      } else {
+        setParseError(
+          `Could not find DNS records in "${file.name}". Expected JSON with query/answer fields.`
+        );
       }
     };
     reader.readAsText(file);
@@ -86,57 +107,43 @@ export function IpInputPanel({
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      const items = Array.from(e.dataTransfer.files);
-      items.forEach(processFile);
+      Array.from(e.dataTransfer.files).forEach(processFile);
     },
     [processFile]
   );
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const items = Array.from(e.target.files || []);
-    items.forEach(processFile);
+    Array.from(e.target.files || []).forEach(processFile);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
+    setParseError(null);
   };
 
   const handleSubmit = () => {
-    const allIps = [
-      ...files.flatMap((f) => f.ips),
-      ...extractIps(pasteInput),
-    ];
-    const unique = [...new Set(allIps)];
-    if (unique.length > 0) {
-      onLookup(unique);
+    const allRecords = files.flatMap((f) => f.records);
+    if (allRecords.length > 0) {
+      onAnalyze(allRecords);
     }
-  };
-
-  const loadSample = () => {
-    const shuffled = [...SAMPLE_IPS]
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 12);
-    setFiles([
-      { name: "sample-ips.txt", ipCount: shuffled.length, ips: shuffled },
-    ]);
-    setPasteInput("");
   };
 
   const clearAll = () => {
     setFiles([]);
-    setPasteInput("");
-    setShowPaste(false);
-    onLookup([]);
+    setParseError(null);
+    onAnalyze([]);
   };
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-foreground">IP Addresses</h2>
-        {resultCount > 0 && (
+        <h2 className="text-sm font-semibold text-foreground">
+          Upload Intel Data
+        </h2>
+        {stats && (
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-mono text-primary">
-            {resultCount} mapped
+            {stats.uniqueAsns} orgs
           </span>
         )}
       </div>
@@ -167,7 +174,7 @@ export function IpInputPanel({
           <span className="font-medium text-primary">browse</span>
         </span>
         <span className="text-xs text-muted-foreground/70">
-          CSV, TXT, JSON, LOG -- any text file with IPs
+          INFRARUN JSON, passive DNS exports, threat intel feeds
         </span>
       </button>
 
@@ -175,10 +182,18 @@ export function IpInputPanel({
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".csv,.txt,.json,.log,.tsv,.xml,.conf,.cfg,.ini,.yaml,.yml,text/*"
+        accept=".json,.txt,.csv,.log,.pdf,text/*,application/json"
         onChange={handleFileSelect}
         className="hidden"
       />
+
+      {/* Parse error */}
+      {parseError && (
+        <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>{parseError}</span>
+        </div>
+      )}
 
       {/* Uploaded files list */}
       {files.length > 0 && (
@@ -194,7 +209,8 @@ export function IpInputPanel({
                   {file.name}
                 </span>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {file.ipCount} IP{file.ipCount !== 1 ? "s" : ""} found
+                  {file.recordCount.toLocaleString()} DNS record
+                  {file.recordCount !== 1 ? "s" : ""}
                 </span>
               </div>
               <button
@@ -210,52 +226,49 @@ export function IpInputPanel({
         </div>
       )}
 
-      {/* Toggle paste input */}
-      {!showPaste ? (
-        <button
-          type="button"
-          onClick={() => setShowPaste(true)}
-          className="min-h-[44px] text-xs text-muted-foreground hover:text-primary transition-colors text-left"
-        >
-          + or paste IPs manually
-        </button>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="paste-input"
-            className="text-xs text-muted-foreground"
-          >
-            Paste additional IPs
-          </label>
-          <textarea
-            id="paste-input"
-            value={pasteInput}
-            onChange={(e) => setPasteInput(e.target.value)}
-            placeholder={"8.8.8.8\n1.1.1.1\n104.16.132.229"}
-            className="h-24 w-full resize-none rounded-md border border-border bg-input px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            spellCheck={false}
-            style={{ fontSize: "16px" }}
-          />
-        </div>
-      )}
-
-      {/* Summary + actions */}
-      {totalIps > 0 && (
+      {/* Summary */}
+      {totalRecords > 0 && (
         <div className="rounded-md bg-secondary/50 px-3 py-2 text-xs text-muted-foreground font-mono">
-          {totalIps} unique IP{totalIps !== 1 ? "s" : ""} ready to scan
-          {totalIps > 500 && (
-            <span className="block text-destructive mt-1">
-              Max 500 per request -- only the first 500 will be processed
-            </span>
-          )}
+          {totalRecords.toLocaleString()} total records ready to analyze
         </div>
       )}
 
+      {/* Stats after analysis */}
+      {stats && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+            <div className="text-lg font-bold font-mono text-primary">
+              {stats.uniqueIps}
+            </div>
+            <div className="text-xs text-muted-foreground">Unique IPs</div>
+          </div>
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+            <div className="text-lg font-bold font-mono text-primary">
+              {stats.uniqueDomains}
+            </div>
+            <div className="text-xs text-muted-foreground">Domains</div>
+          </div>
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+            <div className="text-lg font-bold font-mono text-primary">
+              {stats.uniqueAsns}
+            </div>
+            <div className="text-xs text-muted-foreground">ASNs / Orgs</div>
+          </div>
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+            <div className="text-lg font-bold font-mono text-primary">
+              {stats.totalRecords}
+            </div>
+            <div className="text-xs text-muted-foreground">Records</div>
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
       <div className="flex gap-2">
         <Button
           type="button"
           onClick={handleSubmit}
-          disabled={isLoading || totalIps === 0}
+          disabled={isLoading || totalRecords === 0}
           className="flex-1 min-h-[44px] gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
         >
           {isLoading ? (
@@ -263,28 +276,18 @@ export function IpInputPanel({
           ) : (
             <Search className="h-4 w-4" />
           )}
-          {isLoading ? "Scanning..." : "Map Network"}
+          {isLoading ? "Analyzing..." : "Map Infrastructure"}
         </Button>
-      </div>
-
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={loadSample}
-          className="flex-1 min-h-[44px] gap-2 text-xs border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-        >
-          <Shuffle className="h-3.5 w-3.5" />
-          Sample IPs
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={clearAll}
-          className="min-h-[44px] gap-2 text-xs border-border text-muted-foreground hover:text-destructive hover:bg-secondary"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        {files.length > 0 && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={clearAll}
+            className="min-h-[44px] gap-2 text-xs border-border text-muted-foreground hover:text-destructive hover:bg-secondary"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
     </div>
   );
