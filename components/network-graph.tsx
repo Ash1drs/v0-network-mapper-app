@@ -19,12 +19,15 @@ function buildGraph(groups: AsnGroup[], width: number, height: number): {
 
   const cx = width / 2;
   const cy = height / 2;
+  // Spread ASN hubs evenly around a large ring for a stable starting layout
+  const asnRingRadius = Math.min(width, height) * 0.35;
 
-  for (const group of groups) {
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
     // ASN hub node
     const asnId = `asn-${group.asn}`;
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 100 + Math.random() * Math.min(width, height) * 0.25;
+    const angle = (gi / groups.length) * Math.PI * 2 - Math.PI / 2;
+    const dist = asnRingRadius + (Math.random() - 0.5) * 30;
     nodes.push({
       id: asnId,
       label: group.asName.length > 24 ? group.asName.slice(0, 22) + "..." : group.asName,
@@ -102,29 +105,46 @@ function buildGraph(groups: AsnGroup[], width: number, height: number): {
   return { nodes, edges };
 }
 
+// Simulation state -- temperature cools the sim so it settles
+let simTemperature = 1.0;
+const SIM_COOL_RATE = 0.97; // multiply each tick
+const SIM_MIN_TEMP = 0.001; // below this, sim is frozen
+
+function resetSimTemperature() {
+  simTemperature = 1.0;
+}
+
+function isSimSettled() {
+  return simTemperature < SIM_MIN_TEMP;
+}
+
 function simulateForces(
   nodes: GraphNode[],
   edges: GraphEdge[],
   width: number,
   height: number
 ) {
-  const REPULSION = 2500;
-  const ATTRACTION = 0.008;
-  const DAMPING = 0.82;
-  const CENTER_GRAVITY = 0.005;
+  if (simTemperature < SIM_MIN_TEMP) return;
+
+  const REPULSION = 2000;
+  const ATTRACTION = 0.01;
+  const DAMPING = 0.55;
+  const CENTER_GRAVITY = 0.008;
+  const temp = simTemperature;
 
   const cx = width / 2;
   const cy = height / 2;
 
-  // Repulsion between all nodes -- skip domain-to-domain (too many)
+  // Repulsion between ASN and IP nodes only (skip domain-to-domain)
   for (let i = 0; i < nodes.length; i++) {
     if (nodes[i].type === "domain") continue;
     for (let j = i + 1; j < nodes.length; j++) {
       if (nodes[j].type === "domain") continue;
       const dx = nodes[i].x - nodes[j].x;
       const dy = nodes[i].y - nodes[j].y;
-      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-      const force = REPULSION / (dist * dist);
+      const distSq = dx * dx + dy * dy;
+      const dist = Math.max(Math.sqrt(distSq), 1);
+      const force = (REPULSION * temp) / (dist * dist);
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
       nodes[i].vx += fx;
@@ -143,7 +163,8 @@ function simulateForces(
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-    const force = dist * ATTRACTION;
+    const idealDist = source.type === "asn" || target.type === "asn" ? 80 : 35;
+    const force = (dist - idealDist) * ATTRACTION * temp;
     const fx = (dx / dist) * force;
     const fy = (dy / dist) * force;
     source.vx += fx;
@@ -153,8 +174,8 @@ function simulateForces(
   }
 
   for (const node of nodes) {
-    node.vx += (cx - node.x) * CENTER_GRAVITY;
-    node.vy += (cy - node.y) * CENTER_GRAVITY;
+    node.vx += (cx - node.x) * CENTER_GRAVITY * temp;
+    node.vy += (cy - node.y) * CENTER_GRAVITY * temp;
     node.vx *= DAMPING;
     node.vy *= DAMPING;
     node.x += node.vx;
@@ -162,6 +183,8 @@ function simulateForces(
     node.x = Math.max(node.radius + 4, Math.min(width - node.radius - 4, node.x));
     node.y = Math.max(node.radius + 4, Math.min(height - node.radius - 4, node.y));
   }
+
+  simTemperature *= SIM_COOL_RATE;
 }
 
 interface NetworkGraphProps {
@@ -194,6 +217,8 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
     return () => ro.disconnect();
   }, []);
 
+  const needsRedrawRef = useRef(true);
+
   useEffect(() => {
     if (groups.length === 0) {
       nodesRef.current = [];
@@ -203,6 +228,8 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
     const { nodes, edges } = buildGraph(groups, canvasSize.width, canvasSize.height);
     nodesRef.current = nodes;
     edgesRef.current = edges;
+    resetSimTemperature();
+    needsRedrawRef.current = true;
   }, [groups, canvasSize.width, canvasSize.height]);
 
   const draw = useCallback(() => {
@@ -218,7 +245,8 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
 
-    if (nodes.length > 0) {
+    const simActive = !isSimSettled();
+    if (nodes.length > 0 && simActive) {
       simulateForces(nodes, edges, canvasSize.width, canvasSize.height);
     }
 
@@ -335,13 +363,23 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
       }
     }
 
-    animFrameRef.current = requestAnimationFrame(draw);
+    // Only keep looping if sim is still cooling or user is dragging
+    if (simActive || dragNodeRef.current || needsRedrawRef.current) {
+      needsRedrawRef.current = false;
+      animFrameRef.current = requestAnimationFrame(draw);
+    }
   }, [canvasSize]);
 
-  useEffect(() => {
+  // Kick off the loop whenever draw changes or we need a redraw
+  const startLoop = useCallback(() => {
+    cancelAnimationFrame(animFrameRef.current);
     animFrameRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(animFrameRef.current);
   }, [draw]);
+
+  useEffect(() => {
+    startLoop();
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [startLoop]);
 
   const getNodeAt = useCallback(
     (x: number, y: number): GraphNode | null => {
@@ -384,18 +422,22 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
       const node = getNodeAt(coords.x, coords.y);
       if (node) {
         dragNodeRef.current = node;
+        // Gently reheat so neighbors settle around dragged node
+        simTemperature = Math.max(simTemperature, 0.15);
+        startLoop();
         if (node.type === "asn" && node.asnGroup) {
           onSelectGroup(node.asnGroup);
         }
       }
     },
-    [getCanvasCoords, getNodeAt, onSelectGroup]
+    [getCanvasCoords, getNodeAt, onSelectGroup, startLoop]
   );
 
   const handlePointerMove = useCallback(
     (e: React.MouseEvent | React.TouchEvent) => {
       const coords = getCanvasCoords(e);
       const node = getNodeAt(coords.x, coords.y);
+      const prevHovered = hoveredNodeRef.current;
       hoveredNodeRef.current = node;
 
       if (dragNodeRef.current) {
@@ -405,12 +447,18 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
         dragNodeRef.current.vy = 0;
       }
 
+      // Redraw for hover tooltip changes (even when sim is settled)
+      if (prevHovered?.id !== node?.id || dragNodeRef.current) {
+        needsRedrawRef.current = true;
+        startLoop();
+      }
+
       const canvas = canvasRef.current;
       if (canvas) {
         canvas.style.cursor = node ? "pointer" : "default";
       }
     },
-    [getCanvasCoords, getNodeAt]
+    [getCanvasCoords, getNodeAt, startLoop]
   );
 
   const handlePointerUp = useCallback(() => {
