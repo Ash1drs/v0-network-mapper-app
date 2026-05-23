@@ -33,19 +33,14 @@ export default function Page() {
   });
 
   const graphRef = useRef<NetworkGraphHandle>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Keep canvasRef in sync with graph's internal canvas
-  const updateCanvasRef = () => {
-    if (graphRef.current) {
-      canvasRef.current = graphRef.current.getCanvas();
-    }
-  };
+  // Get canvas directly from graphRef when needed
+  const getCanvasRef = useCallback(() => {
+    return graphRef.current?.getCanvas() ?? null;
+  }, []);
 
   // Apply filters to groups
   const filteredGroups = useMemo(() => {
-    updateCanvasRef();
-    
     let result = groups;
 
     // Hide ASNs
@@ -162,7 +157,7 @@ export default function Page() {
             <ExportControls
               groups={groups}
               filteredGroups={filteredGroups}
-              canvasRef={canvasRef}
+              getCanvas={getCanvasRef}
             />
           )}
           <span className="text-xs font-mono text-muted-foreground hidden sm:inline">

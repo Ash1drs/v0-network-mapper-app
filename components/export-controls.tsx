@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { Download, Image, FileJson, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,33 +14,46 @@ import type { AsnGroup, DnsRecord } from "@/lib/network-types";
 interface ExportControlsProps {
   groups: AsnGroup[];
   filteredGroups: AsnGroup[];
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  getCanvas: () => HTMLCanvasElement | null;
 }
 
-export function ExportControls({ groups, filteredGroups, canvasRef }: ExportControlsProps) {
-  const downloadLinkRef = useRef<HTMLAnchorElement>(null);
-
+export function ExportControls({ groups, filteredGroups, getCanvas }: ExportControlsProps) {
   const triggerDownload = useCallback((blob: Blob, filename: string) => {
+    console.log("[v0] triggerDownload called, blob size:", blob.size, "filename:", filename);
     const url = URL.createObjectURL(blob);
-    const a = downloadLinkRef.current;
-    if (a) {
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    }
+    console.log("[v0] created object URL:", url);
+    
+    // Create a new anchor each time instead of reusing ref (more reliable on mobile)
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log("[v0] download triggered");
   }, []);
 
   const exportPNG = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    console.log("[v0] exportPNG called");
+    
+    const canvas = getCanvas();
+    console.log("[v0] getCanvas() returned:", canvas);
+    
+    if (!canvas) {
+      console.log("[v0] No canvas found!");
+      return;
+    }
 
+    console.log("[v0] Canvas found, dimensions:", canvas.width, canvas.height);
+    
     canvas.toBlob((blob) => {
+      console.log("[v0] toBlob callback, blob:", blob);
       if (blob) {
         triggerDownload(blob, `netmap-${Date.now()}.png`);
       }
     }, "image/png");
-  }, [canvasRef, triggerDownload]);
+  }, [getCanvas, triggerDownload]);
 
   const exportJSON = useCallback(() => {
     const data = {
@@ -142,9 +155,7 @@ export function ExportControls({ groups, filteredGroups, canvasRef }: ExportCont
   if (groups.length === 0) return null;
 
   return (
-    <>
-      <a ref={downloadLinkRef} className="hidden" aria-hidden="true" />
-      <DropdownMenu>
+    <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="outline"
@@ -174,6 +185,5 @@ export function ExportControls({ groups, filteredGroups, canvasRef }: ExportCont
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-    </>
   );
 }
