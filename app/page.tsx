@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { NetworkGraph } from "@/components/network-graph";
+import { useState, useRef, useMemo } from "react";
+import { NetworkGraph, type NetworkGraphHandle } from "@/components/network-graph";
 import { UploadPanel } from "@/components/ip-input-panel";
 import { DetailPanel } from "@/components/detail-panel";
+import { FilterControls, createDefaultFilters, type FilterState } from "@/components/filter-controls";
+import { StatsDashboard } from "@/components/stats-dashboard";
+import { TimelineSlider } from "@/components/timeline-slider";
+import { ExportControls } from "@/components/export-controls";
 import type { DnsRecord, AsnGroup } from "@/lib/network-types";
 import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 
@@ -16,18 +20,94 @@ interface AnalysisStats {
 
 export default function Page() {
   const [groups, setGroups] = useState<AsnGroup[]>([]);
+  const [allRecords, setAllRecords] = useState<DnsRecord[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<AsnGroup | null>(null);
   const [stats, setStats] = useState<AnalysisStats | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [filters, setFilters] = useState<FilterState>(createDefaultFilters);
+  const [dateRange, setDateRange] = useState<{ start: Date | null; end: Date | null }>({
+    start: null,
+    end: null,
+  });
+
+  const graphRef = useRef<NetworkGraphHandle>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Keep canvasRef in sync with graph's internal canvas
+  const updateCanvasRef = () => {
+    if (graphRef.current) {
+      canvasRef.current = graphRef.current.getCanvas();
+    }
+  };
+
+  // Apply filters to groups
+  const filteredGroups = useMemo(() => {
+    updateCanvasRef();
+    
+    let result = groups;
+
+    // Hide ASNs
+    if (filters.hiddenAsns.size > 0) {
+      result = result.filter((g) => !filters.hiddenAsns.has(g.asn));
+    }
+
+    // Search query
+    if (filters.searchQuery.trim()) {
+      const q = filters.searchQuery.toLowerCase();
+      result = result.filter(
+        (g) =>
+          g.asn.toLowerCase().includes(q) ||
+          g.asName.toLowerCase().includes(q) ||
+          g.ips.some((ip) => ip.includes(q)) ||
+          g.domains.some((d) => d.toLowerCase().includes(q))
+      );
+    }
+
+    // Risk filter
+    if (filters.minRiskScore > 0 || filters.maxRiskScore < 100) {
+      result = result.filter(
+        (g) =>
+          g.maxRiskScore >= filters.minRiskScore &&
+          g.maxRiskScore <= filters.maxRiskScore
+      );
+    }
+
+    // Date range filter
+    if (dateRange.start || dateRange.end) {
+      result = result.map((g) => {
+        const filteredRecords = g.records.filter((r) => {
+          const firstSeen = r.first_seen ? new Date(r.first_seen).getTime() : 0;
+          const lastSeen = r.last_seen ? new Date(r.last_seen).getTime() : Date.now();
+          const start = dateRange.start?.getTime() ?? 0;
+          const end = dateRange.end?.getTime() ?? Date.now();
+          return lastSeen >= start && firstSeen <= end;
+        });
+
+        if (filteredRecords.length === 0) return null;
+
+        return {
+          ...g,
+          records: filteredRecords,
+          ips: [...new Set(filteredRecords.map((r) => r.answer))],
+          domains: [...new Set(filteredRecords.map((r) => r.query))],
+        };
+      }).filter((g): g is AsnGroup => g !== null);
+    }
+
+    return result;
+  }, [groups, filters, dateRange]);
 
   const handleAnalyze = async (records: DnsRecord[]) => {
     if (records.length === 0) {
       setGroups([]);
+      setAllRecords([]);
       setSelectedGroup(null);
       setStats(null);
       setError(null);
+      setFilters(createDefaultFilters());
+      setDateRange({ start: null, end: null });
       return;
     }
 
@@ -47,17 +127,24 @@ export default function Page() {
         return;
       }
       setGroups(data.groups);
+      setAllRecords(records);
       setStats({
         totalRecords: data.totalRecords,
         uniqueIps: data.uniqueIps,
         uniqueDomains: data.uniqueDomains,
         uniqueAsns: data.uniqueAsns,
       });
+      setFilters(createDefaultFilters());
+      setDateRange({ start: null, end: null });
     } catch {
       setError("Failed to analyze data");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleDateRangeChange = (start: Date | null, end: Date | null) => {
+    setDateRange({ start, end });
   };
 
   return (
@@ -70,9 +157,18 @@ export default function Page() {
             NetMap
           </h1>
         </div>
-        <span className="text-xs font-mono text-muted-foreground hidden sm:inline">
-          Infrastructure Intelligence Mapper
-        </span>
+        <div className="flex items-center gap-3">
+          {groups.length > 0 && (
+            <ExportControls
+              groups={groups}
+              filteredGroups={filteredGroups}
+              canvasRef={canvasRef}
+            />
+          )}
+          <span className="text-xs font-mono text-muted-foreground hidden sm:inline">
+            Infrastructure Intelligence Mapper
+          </span>
+        </div>
       </header>
 
       <div className="flex flex-1 flex-col lg:flex-row">
@@ -110,9 +206,26 @@ export default function Page() {
               </div>
             )}
 
+            {groups.length > 0 && (
+              <>
+                <FilterControls
+                  groups={groups}
+                  filters={filters}
+                  onFiltersChange={setFilters}
+                />
+
+                <TimelineSlider
+                  groups={groups}
+                  onDateRangeChange={handleDateRangeChange}
+                />
+
+                <StatsDashboard groups={filteredGroups} allRecords={allRecords} />
+              </>
+            )}
+
             <DetailPanel
               selectedGroup={selectedGroup}
-              groups={groups}
+              groups={filteredGroups}
               onSelectGroup={setSelectedGroup}
             />
           </div>
@@ -120,7 +233,11 @@ export default function Page() {
 
         {/* Graph Area */}
         <section className="flex flex-1 flex-col p-3 lg:p-4 min-h-[350px] lg:min-h-0">
-          <NetworkGraph groups={groups} onSelectGroup={setSelectedGroup} />
+          <NetworkGraph
+            ref={graphRef}
+            groups={filteredGroups}
+            onSelectGroup={setSelectedGroup}
+          />
         </section>
       </div>
     </main>

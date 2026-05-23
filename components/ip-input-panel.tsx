@@ -26,7 +26,7 @@ interface UploadPanelProps {
 }
 
 function tryParseRecords(text: string): DnsRecord[] {
-  // Try direct JSON array
+  // Try direct JSON array first
   try {
     const parsed = JSON.parse(text);
     if (Array.isArray(parsed)) return parsed;
@@ -40,13 +40,21 @@ function tryParseRecords(text: string): DnsRecord[] {
   const arrayMatch = text.match(/\[[\s\S]*\]/);
   if (arrayMatch) {
     try {
-      // Clean up common PDF artifacts: line breaks inside strings, stray hyphens
+      // Clean up common PDF artifacts
       let cleaned = arrayMatch[0];
-      // Fix line breaks inside JSON string values
-      cleaned = cleaned.replace(/-\n/g, "");
+      // Fix hyphenated line breaks (word-\nbreak => wordbreak)
+      cleaned = cleaned.replace(/-\s*\n\s*/g, "");
+      // Fix regular line breaks
       cleaned = cleaned.replace(/\n/g, " ");
-      // Fix split words with spaces (e.g. "q u e r y" => "query")
+      // Normalize multiple spaces
+      cleaned = cleaned.replace(/\s+/g, " ");
+      // Fix spaced out letters from PDF extraction (e.g. "q u e r y" => "query")
       cleaned = cleaned.replace(/" q u e r y/g, '"query');
+      cleaned = cleaned.replace(/q u e r y_/g, 'query_');
+      // Fix any remaining broken field names
+      cleaned = cleaned.replace(/a n s w e r/g, 'answer');
+      cleaned = cleaned.replace(/c o u n t/g, 'count');
+      
       const parsed = JSON.parse(cleaned);
       if (Array.isArray(parsed)) return parsed;
     } catch {
@@ -85,6 +93,15 @@ export function UploadPanel({
 
   const processFile = useCallback((file: File) => {
     setParseError(null);
+    
+    // PDF files can't be read as text directly
+    if (file.name.endsWith(".pdf") || file.type === "application/pdf") {
+      setParseError(
+        `PDF files need to be converted first. Please export your INFRARUN data as JSON, or copy the JSON content into a .json or .txt file.`
+      );
+      return;
+    }
+    
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
@@ -174,7 +191,7 @@ export function UploadPanel({
           <span className="font-medium text-primary">browse</span>
         </span>
         <span className="text-xs text-muted-foreground/70">
-          INFRARUN JSON, passive DNS exports, threat intel feeds
+          JSON files only -- export from INFRARUN or paste JSON into .txt
         </span>
       </button>
 
@@ -182,7 +199,7 @@ export function UploadPanel({
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".json,.txt,.csv,.log,.pdf,text/*,application/json"
+        accept=".json,.txt,.csv,.log,text/*,application/json"
         onChange={handleFileSelect}
         className="hidden"
       />

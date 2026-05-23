@@ -1,7 +1,11 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, forwardRef, useImperativeHandle } from "react";
 import type { GraphNode, GraphEdge, AsnGroup } from "@/lib/network-types";
+
+export interface NetworkGraphHandle {
+  getCanvas: () => HTMLCanvasElement | null;
+}
 
 function riskColor(score: number): string {
   if (score >= 70) return "#f87171";
@@ -192,7 +196,8 @@ interface NetworkGraphProps {
   onSelectGroup: (group: AsnGroup | null) => void;
 }
 
-export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
+export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
+  function NetworkGraph({ groups, onSelectGroup }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const nodesRef = useRef<GraphNode[]>([]);
@@ -201,6 +206,10 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
   const dragNodeRef = useRef<GraphNode | null>(null);
   const hoveredNodeRef = useRef<GraphNode | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 500 });
+
+  useImperativeHandle(ref, () => ({
+    getCanvas: () => canvasRef.current,
+  }), []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -537,4 +546,4 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
       </div>
     </div>
   );
-}
+});
