@@ -20,13 +20,24 @@ interface ExportControlsProps {
 export function ExportControls({ groups, filteredGroups, getCanvas }: ExportControlsProps) {
   const triggerDownload = useCallback((blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    
+    // For mobile Safari, try opening in a new tab instead of programmatic download
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      // Open blob URL in new window/tab - user can then save manually
+      window.open(url, "_blank");
+      // Clean up after delay
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } else {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
   }, []);
 
   const exportPNG = useCallback(() => {
