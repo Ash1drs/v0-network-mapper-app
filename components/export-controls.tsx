@@ -19,11 +19,7 @@ interface ExportControlsProps {
 
 export function ExportControls({ groups, filteredGroups, getCanvas }: ExportControlsProps) {
   const triggerDownload = useCallback((blob: Blob, filename: string) => {
-    console.log("[v0] triggerDownload called, blob size:", blob.size, "filename:", filename);
     const url = URL.createObjectURL(blob);
-    console.log("[v0] created object URL:", url);
-    
-    // Create a new anchor each time instead of reusing ref (more reliable on mobile)
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
@@ -31,24 +27,13 @@ export function ExportControls({ groups, filteredGroups, getCanvas }: ExportCont
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    console.log("[v0] download triggered");
   }, []);
 
   const exportPNG = useCallback(() => {
-    console.log("[v0] exportPNG called");
-    
     const canvas = getCanvas();
-    console.log("[v0] getCanvas() returned:", canvas);
-    
-    if (!canvas) {
-      console.log("[v0] No canvas found!");
-      return;
-    }
-
-    console.log("[v0] Canvas found, dimensions:", canvas.width, canvas.height);
+    if (!canvas) return;
     
     canvas.toBlob((blob) => {
-      console.log("[v0] toBlob callback, blob:", blob);
       if (blob) {
         triggerDownload(blob, `netmap-${Date.now()}.png`);
       }

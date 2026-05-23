@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useCallback } from "react";
 import { NetworkGraph, type NetworkGraphHandle } from "@/components/network-graph";
 import { UploadPanel } from "@/components/ip-input-panel";
 import { DetailPanel } from "@/components/detail-panel";

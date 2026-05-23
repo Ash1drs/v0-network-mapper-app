@@ -208,10 +208,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 500 });
 
   useImperativeHandle(ref, () => ({
-    getCanvas: () => {
-      console.log("[v0] NetworkGraph.getCanvas called, canvasRef.current:", canvasRef.current);
-      return canvasRef.current;
-    },
+    getCanvas: () => canvasRef.current,
   }), []);
 
   useEffect(() => {
