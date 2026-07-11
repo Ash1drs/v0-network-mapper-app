@@ -374,16 +374,13 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
 
       // Label below hub nodes only (to avoid clutter)
       if (node.type === "asn") {
-        const asn = node.asnGroup?.asn || "?";
-        // Real ASNs get an "AS" prefix; domain-family / other cluster keys don't
-        const hubLabel = /^AS\d+$/i.test(asn)
-          ? asn.toUpperCase()
-          : /^\d+$/.test(asn)
-          ? `AS${asn}`
-          : asn;
         ctx.fillStyle = node.color + "bb";
         ctx.font = "10px Geist, sans-serif";
-        ctx.fillText(hubLabel, node.x, node.y + node.radius + 12);
+        ctx.fillText(
+          clusterLabel(node.asnGroup?.asn || "?"),
+          node.x,
+          node.y + node.radius + 12
+        );
       }
 
       // Show IP label on hover
