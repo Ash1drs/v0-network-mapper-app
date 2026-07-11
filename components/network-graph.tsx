@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useCallback, useState } from "react";
-import type { GraphNode, GraphEdge, AsnGroup } from "@/lib/network-types";
+import { clusterLabel, type GraphNode, type GraphEdge, type AsnGroup } from "@/lib/network-types";
 
 function riskColor(score: number): string {
   if (score >= 70) return "#f87171";
@@ -70,7 +70,7 @@ function buildGraph(groups: AsnGroup[], width: number, height: number): {
       edges.push({ source: asnId, target: ipId, color: group.color });
 
       // Domain nodes branching from IPs (limit to avoid overload)
-      const domainsForIp = ipRecords.map((r) => r.query);
+      const domainsForIp = ipRecords.map((r) => r.query).filter(Boolean);
       const uniqueDomains = [...new Set(domainsForIp)].slice(0, 3);
 
       for (let d = 0; d < uniqueDomains.length; d++) {
@@ -99,6 +99,45 @@ function buildGraph(groups: AsnGroup[], width: number, height: number): {
 
         edges.push({ source: ipId, target: domainId, color: group.color + "60" });
       }
+    }
+
+    // Domains with no resolved IP -> attach directly to the cluster hub so
+    // relationship-only feeds (VT Graph / MISP with no ASN) still render.
+    const domainOnly = group.records
+      .filter((r) => r.query && !r.answer)
+      .map((r) => r.query);
+    const seenDomains = new Set<string>();
+    const uniqueDomainOnly = domainOnly.filter((d) => {
+      if (seenDomains.has(d)) return false;
+      seenDomains.add(d);
+      return true;
+    });
+
+    const hub = nodes.find((n) => n.id === asnId)!;
+    for (let i = 0; i < uniqueDomainOnly.length; i++) {
+      const domain = uniqueDomainOnly[i];
+      const domainId = `dom-${domain}`;
+      const domAngle = angle + ((i / Math.max(uniqueDomainOnly.length, 1)) * Math.PI * 2) / groups.length - Math.PI / groups.length;
+      const domDist = 55 + Math.random() * 55;
+
+      const domRecord = group.records.find((r) => r.query === domain && !r.answer);
+      const domRisk = domRecord?.query_risk_score ?? 0;
+
+      nodes.push({
+        id: domainId,
+        label: domain.length > 20 ? domain.slice(0, 18) + "..." : domain,
+        type: "domain",
+        x: hub.x + Math.cos(domAngle) * domDist,
+        y: hub.y + Math.sin(domAngle) * domDist,
+        vx: 0,
+        vy: 0,
+        radius: 5,
+        color: riskColor(domRisk),
+        riskScore: domRisk,
+        data: domRecord,
+      });
+
+      edges.push({ source: asnId, target: domainId, color: group.color + "50" });
     }
   }
 
@@ -333,15 +372,18 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
       }
       // domains are too small for labels inside
 
-      // Label below ASN nodes only (to avoid clutter)
+      // Label below hub nodes only (to avoid clutter)
       if (node.type === "asn") {
+        const asn = node.asnGroup?.asn || "?";
+        // Real ASNs get an "AS" prefix; domain-family / other cluster keys don't
+        const hubLabel = /^AS\d+$/i.test(asn)
+          ? asn.toUpperCase()
+          : /^\d+$/.test(asn)
+          ? `AS${asn}`
+          : asn;
         ctx.fillStyle = node.color + "bb";
         ctx.font = "10px Geist, sans-serif";
-        ctx.fillText(
-          `AS${node.asnGroup?.asn || "?"}`,
-          node.x,
-          node.y + node.radius + 12
-        );
+        ctx.fillText(hubLabel, node.x, node.y + node.radius + 12);
       }
 
       // Show IP label on hover

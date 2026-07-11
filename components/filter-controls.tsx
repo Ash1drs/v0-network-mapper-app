@@ -11,7 +11,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { AsnGroup } from "@/lib/network-types";
+import { clusterLabel, type AsnGroup } from "@/lib/network-types";
 
 export interface FilterState {
   searchQuery: string;
@@ -211,7 +211,7 @@ export function FilterControls({
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">
-                  ASN Clusters
+                  Clusters
                 </span>
                 <div className="flex gap-1">
                   <Button
@@ -259,7 +259,7 @@ export function FilterControls({
                         style={{ backgroundColor: group.color }}
                       />
                       <span className="flex-1 truncate text-xs font-mono text-foreground">
-                        AS{group.asn}
+                        {clusterLabel(group.asn)}
                       </span>
                       <button
                         type="button"

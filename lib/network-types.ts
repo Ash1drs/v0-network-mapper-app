@@ -16,6 +16,15 @@ export interface DnsRecord {
   type: string;
 }
 
+// Human-friendly label for a cluster key. Real ASNs render as "AS15169";
+// domain-family or other keys (e.g. "symantke.com", "unknown") render as-is.
+export function clusterLabel(asn: string): string {
+  if (!asn || asn === "unknown") return "Ungrouped";
+  if (/^AS\d+$/i.test(asn)) return asn.toUpperCase();
+  if (/^\d+$/.test(asn)) return `AS${asn}`;
+  return asn;
+}
+
 // Grouped by ASN / organization
 export interface AsnGroup {
   asn: string;

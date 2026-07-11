@@ -1,6 +1,6 @@
 "use client";
 
-import type { AsnGroup, DnsRecord } from "@/lib/network-types";
+import { clusterLabel, type AsnGroup, type DnsRecord } from "@/lib/network-types";
 import {
   Globe,
   Server,
@@ -123,7 +123,7 @@ export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPane
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-foreground">ASN Details</h2>
+          <h2 className="text-sm font-semibold text-foreground">Cluster Details</h2>
           <Button
             variant="ghost"
             size="icon"
@@ -147,7 +147,7 @@ export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPane
           <div className="flex items-center gap-2 mb-3">
             <Server className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs font-mono text-muted-foreground">
-              AS{selectedGroup.asn}
+              {clusterLabel(selectedGroup.asn)}
             </span>
           </div>
 
@@ -216,7 +216,7 @@ export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPane
       <h2 className="text-sm font-semibold text-foreground">
         Infrastructure Groups
         <span className="ml-2 text-xs font-normal text-muted-foreground">
-          ({groups.length} ASN{groups.length !== 1 ? "s" : ""})
+          ({groups.length} cluster{groups.length !== 1 ? "s" : ""})
         </span>
       </h2>
       <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto">
@@ -246,7 +246,7 @@ export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPane
               </span>
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono">
-              <span>AS{group.asn}</span>
+              <span>{clusterLabel(group.asn)}</span>
               <span>{group.ips.length} IP{group.ips.length !== 1 ? "s" : ""}</span>
               <span>{group.domains.length} domain{group.domains.length !== 1 ? "s" : ""}</span>
             </div>

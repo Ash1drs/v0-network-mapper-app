@@ -167,6 +167,171 @@ function parseStix(bundle: any): DnsRecord[] {
 }
 
 // ---------------------------------------------------------------------------
+// Format: MISP Event (also produced by VirusTotal Graph "export")
+// ---------------------------------------------------------------------------
+
+// A tiny registrable-domain heuristic so we can cluster related hosts
+// (e.g. api.symantke.com + cdn.symantke.com -> "symantke.com") when the feed
+// carries no ASN, which is the case for VT Graph / MISP exports.
+const TWO_LEVEL_TLDS = new Set([
+  "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "co.kr", "co.nz", "co.za",
+  "com.au", "com.br", "com.cn", "com.mx", "com.tr", "com.tw", "net.au",
+]);
+
+function registrableDomain(host: string): string {
+  const h = host.replace(/\.$/, "").toLowerCase();
+  const parts = h.split(".");
+  if (parts.length <= 2) return h;
+  const lastTwo = parts.slice(-2).join(".");
+  const lastThree = parts.slice(-3).join(".");
+  if (TWO_LEVEL_TLDS.has(lastTwo)) return lastThree;
+  return lastTwo;
+}
+
+function hostFromUrl(value: string): string {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    const m = value.match(/^[a-z]+:\/\/([^/:?#]+)/i);
+    return m ? m[1] : value;
+  }
+}
+
+// "6/91" -> risk on a 0-100 scale
+function detectionRatioToRisk(ratio: string): number {
+  const m = String(ratio).match(/(\d+)\s*\/\s*(\d+)/);
+  if (!m) return 0;
+  const malicious = Number(m[1]);
+  const total = Number(m[2]);
+  if (!total) return 0;
+  return Math.round((malicious / total) * 100);
+}
+
+interface MispObject {
+  uuid: string;
+  name: string;
+  Attribute?: any[];
+  ObjectReference?: any[];
+}
+
+function parseMisp(event: any): DnsRecord[] {
+  const attributes: any[] = event.Attribute || [];
+  const objects: MispObject[] = event.Object || [];
+
+  // ---- object attribute lookup helpers ----
+  const objById = new Map<string, MispObject>();
+  for (const o of objects) if (o.uuid) objById.set(o.uuid, o);
+
+  const attrVal = (o: MispObject | undefined, ...keys: string[]) => {
+    if (!o?.Attribute) return "";
+    for (const a of o.Attribute) {
+      const rel = (a.object_relation || a.type || "").toLowerCase();
+      if (keys.includes(rel)) return String(a.value ?? "");
+    }
+    return "";
+  };
+
+  // Primary indicator value for an object (domain / ip / url)
+  const objIndicator = (o: MispObject | undefined): { domain?: string; ip?: string; url?: string } => {
+    if (!o) return {};
+    const domain = attrVal(o, "domain", "hostname");
+    const ip = attrVal(o, "ip", "ip-dst", "ip-src", "ip-addr");
+    const url = attrVal(o, "url");
+    return { domain: domain || undefined, ip: ip || undefined, url: url || undefined };
+  };
+
+  // ---- detection ratio (behavior/reputation) via analysed-with -> report ----
+  const riskByObject = new Map<string, number>();
+  for (const o of objects) {
+    for (const ref of o.ObjectReference || []) {
+      if (ref.relationship_type === "analysed-with") {
+        const report = objById.get(ref.referenced_uuid);
+        const ratio = attrVal(report, "detection-ratio");
+        if (ratio) riskByObject.set(o.uuid, detectionRatioToRisk(ratio));
+      }
+    }
+  }
+
+  const records: DnsRecord[] = [];
+  const resolvedDomains = new Set<string>();
+  const resolvedIps = new Set<string>();
+
+  // ---- resolves-to relationships: domain <-> ip pairs ----
+  for (const o of objects) {
+    const srcInd = objIndicator(o);
+    for (const ref of o.ObjectReference || []) {
+      if (ref.relationship_type !== "resolves-to") continue;
+      const tgt = objById.get(ref.referenced_uuid);
+      const tgtInd = objIndicator(tgt);
+      const domain = srcInd.domain || tgtInd.domain || "";
+      const ip = srcInd.ip || tgtInd.ip || "";
+      if (!domain && !ip) continue;
+      const fam = domain ? registrableDomain(domain) : "";
+      records.push(
+        makeRecord({
+          query: domain,
+          answer: ip,
+          query_risk_score: riskByObject.get(o.uuid) || 0,
+          answer_risk_score: (tgt && riskByObject.get(tgt.uuid)) || 0,
+          query_asn: fam,
+          query_as_name: fam,
+          answer_asn: fam,
+          answer_as_name: fam,
+          type: "A",
+        }),
+      );
+      if (domain) resolvedDomains.add(domain);
+      if (ip) resolvedIps.add(ip);
+    }
+  }
+
+  // ---- standalone indicators (domains/ips/urls not already paired) ----
+  const seenDomain = new Set(resolvedDomains);
+  const seenIp = new Set(resolvedIps);
+
+  const addDomain = (domain: string, risk: number) => {
+    if (!domain || seenDomain.has(domain)) return;
+    // A URL/host field can actually contain an IP -> treat it as an IP.
+    if (isIp(domain)) {
+      addIp(domain, risk);
+      return;
+    }
+    seenDomain.add(domain);
+    const fam = registrableDomain(domain);
+    records.push(
+      makeRecord({ query: domain, query_risk_score: risk, query_asn: fam, query_as_name: fam }),
+    );
+  };
+  const addIp = (ip: string, risk: number) => {
+    if (!ip || seenIp.has(ip)) return;
+    seenIp.add(ip);
+    records.push(makeRecord({ answer: ip, answer_risk_score: risk }));
+  };
+
+  // From objects (domain-ip / url objects)
+  for (const o of objects) {
+    if (o.name === "virustotal-report" || o.name === "virustotal-graph") continue;
+    const { domain, ip, url } = objIndicator(o);
+    const risk = riskByObject.get(o.uuid) || 0;
+    if (domain) addDomain(domain, risk);
+    if (ip) addIp(ip, risk);
+    if (url) addDomain(hostFromUrl(url), risk);
+  }
+
+  // From flat event-level attributes
+  for (const a of attributes) {
+    const type = String(a.type || "").toLowerCase();
+    const value = String(a.value ?? "");
+    if (!value) continue;
+    if (type.includes("ip")) addIp(value, 0);
+    else if (type === "domain" || type === "hostname") addDomain(value, 0);
+    else if (type === "url") addDomain(hostFromUrl(value), 0);
+  }
+
+  return records;
+}
+
+// ---------------------------------------------------------------------------
 // Format: AlienVault OTX
 // ---------------------------------------------------------------------------
 
@@ -344,6 +509,24 @@ export function ingest(text: string, filename = ""): IngestResult {
   }
 
   if (json !== null && typeof json === "object") {
+    // MISP Event (also what VirusTotal Graph exports). Either { Event: {...} }
+    // or a bare event object with an Attribute/Object array.
+    const mispEvent =
+      json.Event && typeof json.Event === "object"
+        ? json.Event
+        : Array.isArray(json.Attribute) || Array.isArray(json.Object)
+        ? json
+        : null;
+    if (mispEvent && (Array.isArray(mispEvent.Attribute) || Array.isArray(mispEvent.Object))) {
+      const isVtGraph = (mispEvent.Object || []).some(
+        (o: any) => o?.name === "virustotal-graph" || o?.name === "virustotal-report",
+      );
+      return {
+        records: parseMisp(mispEvent),
+        format: isVtGraph ? "VirusTotal Graph (MISP)" : "MISP Event",
+      };
+    }
+
     // STIX bundle
     if (json.type === "bundle" && Array.isArray(json.objects)) {
       return { records: parseStix(json), format: "STIX 2.x" };
