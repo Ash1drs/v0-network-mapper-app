@@ -10,12 +10,18 @@ import {
 } from "react";
 import {
   entityColor,
+  zoneColor,
   MATCH_COLOR,
+  BRIDGE_COLOR,
   EDGE_KIND_LABEL,
+  ZONE_COLOR,
+  ZONE_LABEL,
+  ZONE_ORDER,
   type EntityKind,
   type ThreatGraph,
   type Entity,
 } from "@/lib/network-types";
+import type { ColorMode } from "@/app/page";
 
 // A rendered node carries live simulation state alongside its entity.
 interface RNode {
@@ -36,6 +42,7 @@ interface REdge {
   kind: string;
   color: string;
   matched: boolean;
+  crossZone: boolean;
 }
 
 const KIND_RADIUS: Record<EntityKind, number> = {
@@ -52,6 +59,7 @@ const MAX_NODES = 350;
 function buildRenderGraph(
   graph: ThreatGraph,
   feedOrder: string[],
+  colorMode: ColorMode,
   width: number,
   height: number,
 ): { nodes: RNode[]; edges: REdge[] } {
@@ -93,20 +101,31 @@ function buildRenderGraph(
       vx: 0,
       vy: 0,
       radius: KIND_RADIUS[e.kind] + Math.min(deg, 6),
-      color: entityColor(e, feedOrder),
+      color: colorMode === "zone" ? zoneColor(e.zone) : entityColor(e, feedOrder),
       degree: deg,
     };
   });
 
+  const zoneById = new Map(entities.map((e) => [e.id, e.zone]));
+
   const edges: REdge[] = graph.relationships
     .filter((r) => keep.has(r.source) && keep.has(r.target))
-    .map((r) => ({
-      source: r.source,
-      target: r.target,
-      kind: r.kind,
-      matched: !!r.matched,
-      color: r.matched ? MATCH_COLOR : entityColor({ feeds: r.feeds }, feedOrder),
-    }));
+    .map((r) => {
+      let color: string;
+      if (colorMode === "zone") {
+        color = r.crossZone ? BRIDGE_COLOR : zoneColor(zoneById.get(r.source));
+      } else {
+        color = r.matched ? MATCH_COLOR : entityColor({ feeds: r.feeds }, feedOrder);
+      }
+      return {
+        source: r.source,
+        target: r.target,
+        kind: r.kind,
+        matched: !!r.matched,
+        crossZone: !!r.crossZone,
+        color,
+      };
+    });
 
   return { nodes, edges };
 }
@@ -224,6 +243,7 @@ function drawShape(
 interface NetworkGraphProps {
   graph: ThreatGraph;
   feedOrder: string[];
+  colorMode: ColorMode;
   selectedId: string | null;
   onSelectEntity: (entity: Entity | null) => void;
 }
@@ -234,7 +254,7 @@ export interface NetworkGraphHandle {
 }
 
 export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
-  function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }, ref) {
+  function NetworkGraph({ graph, feedOrder, colorMode, selectedId, onSelectEntity }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -263,12 +283,12 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       edgesRef.current = [];
       return;
     }
-    const { nodes, edges } = buildRenderGraph(graph, feedOrder, size.width, size.height);
+    const { nodes, edges } = buildRenderGraph(graph, feedOrder, colorMode, size.width, size.height);
     nodesRef.current = nodes;
     edgesRef.current = edges;
     resetSim();
     needsRedraw.current = true;
-  }, [graph, feedOrder, size.width, size.height]);
+  }, [graph, feedOrder, colorMode, size.width, size.height]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -434,7 +454,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
   useEffect(() => {
     startLoop();
     return () => cancelAnimationFrame(animRef.current);
-  }, [startLoop, graph, feedOrder]);
+  }, [startLoop, graph, feedOrder, colorMode]);
 
   const coords = useCallback((ev: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;

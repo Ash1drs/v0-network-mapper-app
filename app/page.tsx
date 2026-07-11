@@ -5,9 +5,13 @@ import { NetworkGraph, type NetworkGraphHandle } from "@/components/network-grap
 import { UploadPanel } from "@/components/ip-input-panel";
 import { DetailPanel } from "@/components/detail-panel";
 import { GraphFilters } from "@/components/filter-controls";
-import type { Entity, EntityKind, ThreatGraph } from "@/lib/network-types";
+import type { Entity, EntityKind, ThreatGraph, Zone } from "@/lib/network-types";
+import { ZONE_ORDER } from "@/lib/network-types";
+import { applyZones, zoneCounts, bridgeCount, type ZoneOverrides } from "@/lib/zones";
 import { exportPng, canvasToPng, generatePdfReport, type ReportStats } from "@/lib/report";
-import { Activity, ChevronDown, ChevronUp, ImageDown, FileDown } from "lucide-react";
+import { Activity, ChevronDown, ChevronUp, ImageDown, FileDown, Palette } from "lucide-react";
+
+export type ColorMode = "feed" | "zone";
 
 interface AnalysisStats {
   entities: number;
@@ -21,7 +25,9 @@ interface AnalysisStats {
 export interface GraphFilterState {
   kinds: Set<EntityKind>;
   feeds: Set<string>;
+  zones: Set<Zone>;
   matchedOnly: boolean;
+  pivotsOnly: boolean;
 }
 
 const EMPTY_GRAPH: ThreatGraph = { entities: [], relationships: [] };
@@ -34,10 +40,14 @@ export default function Page() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [colorMode, setColorMode] = useState<ColorMode>("feed");
+  const [zoneOverrides, setZoneOverrides] = useState<ZoneOverrides>({});
   const [filters, setFilters] = useState<GraphFilterState>({
     kinds: new Set(),
     feeds: new Set(),
+    zones: new Set(),
     matchedOnly: false,
+    pivotsOnly: false,
   });
   const graphRef = useRef<NetworkGraphHandle>(null);
 
@@ -67,11 +77,14 @@ export default function Page() {
       setRawGraph(data.graph);
       setFeedOrder(data.feedOrder);
       setStats(data.stats);
+      setZoneOverrides({});
       // Reset filters to show everything present.
       setFilters({
         kinds: new Set(Object.keys(data.stats.byKind) as EntityKind[]),
         feeds: new Set(data.feedOrder as string[]),
+        zones: new Set(ZONE_ORDER),
         matchedOnly: false,
+        pivotsOnly: false,
       });
     } catch {
       setError("Failed to analyze data");
@@ -80,22 +93,46 @@ export default function Page() {
     }
   };
 
-  // Apply live filters to the merged graph.
+  // Classify environments + detect pivots. Recomputes instantly when the user
+  // reassigns a node's zone (overrides), no server round-trip.
+  const zonedGraph = useMemo<ThreatGraph>(
+    () => (rawGraph.entities.length === 0 ? EMPTY_GRAPH : applyZones(rawGraph, zoneOverrides)),
+    [rawGraph, zoneOverrides],
+  );
+
+  const zoneStats = useMemo(
+    () => ({ counts: zoneCounts(zonedGraph.entities), pivots: bridgeCount(zonedGraph.entities) }),
+    [zonedGraph],
+  );
+
+  // Apply live filters to the zoned graph.
   const filteredGraph = useMemo<ThreatGraph>(() => {
-    if (rawGraph.entities.length === 0) return EMPTY_GRAPH;
+    if (zonedGraph.entities.length === 0) return EMPTY_GRAPH;
     const keep = new Set<string>();
-    const entities = rawGraph.entities.filter((e) => {
+    const entities = zonedGraph.entities.filter((e) => {
       if (filters.kinds.size && !filters.kinds.has(e.kind)) return false;
       if (filters.feeds.size && !e.feeds.some((f) => filters.feeds.has(f))) return false;
+      if (filters.zones.size && !filters.zones.has(e.zone ?? "unknown")) return false;
       if (filters.matchedOnly && !e.matched) return false;
+      if (filters.pivotsOnly && !e.isBridge) return false;
       keep.add(e.id);
       return true;
     });
-    const relationships = rawGraph.relationships.filter(
+    const relationships = zonedGraph.relationships.filter(
       (r) => keep.has(r.source) && keep.has(r.target),
     );
     return { entities, relationships };
-  }, [rawGraph, filters]);
+  }, [zonedGraph, filters]);
+
+  // Keep the selected entity in sync with recomputed zone/bridge state.
+  const selectedZoned = useMemo(
+    () => (selected ? zonedGraph.entities.find((e) => e.id === selected.id) ?? selected : null),
+    [selected, zonedGraph],
+  );
+
+  const setEntityZone = (id: string, zone: Zone) => {
+    setZoneOverrides((prev) => ({ ...prev, [id]: zone }));
+  };
 
   // Resolve the canvas background so exported images match the on-screen card.
   const graphBackground = (canvas: HTMLCanvasElement) => {
@@ -185,21 +222,48 @@ export default function Page() {
                 filters={filters}
                 onChange={setFilters}
                 matchedCount={stats.matchedEntities}
+                zoneCountsMap={zoneStats.counts}
+                pivotCount={zoneStats.pivots}
               />
             )}
 
-            <DetailPanel graph={rawGraph} feedOrder={feedOrder} selected={selected} onSelect={setSelected} />
+            <DetailPanel
+              graph={zonedGraph}
+              feedOrder={feedOrder}
+              colorMode={colorMode}
+              selected={selectedZoned}
+              onSelect={setSelected}
+              onSetZone={setEntityZone}
+            />
           </div>
         </aside>
 
         <section className="flex flex-1 flex-col p-3 lg:p-4 min-h-[350px] lg:min-h-0 lg:h-full">
-          <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-mono text-muted-foreground">
               {canExport
                 ? `${filteredGraph.entities.length} entities · ${filteredGraph.relationships.length} relationships`
                 : "No graph loaded"}
             </span>
             <div className="flex items-center gap-2">
+              {/* Color-by segmented toggle: Feed source vs Environment zone */}
+              <div className="inline-flex items-center rounded-md border border-border bg-card p-0.5">
+                <Palette className="mx-1.5 h-3.5 w-3.5 text-muted-foreground" />
+                {(["feed", "zone"] as ColorMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setColorMode(mode)}
+                    className={`min-h-[32px] rounded px-2.5 text-xs font-medium capitalize transition-colors ${
+                      colorMode === mode
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {mode === "zone" ? "Environment" : "Feed"}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 onClick={handleExportPng}
@@ -224,6 +288,7 @@ export default function Page() {
             ref={graphRef}
             graph={filteredGraph}
             feedOrder={feedOrder}
+            colorMode={colorMode}
             selectedId={selected?.id ?? null}
             onSelectEntity={setSelected}
           />

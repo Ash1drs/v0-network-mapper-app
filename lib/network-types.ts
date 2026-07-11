@@ -78,6 +78,10 @@ export type EdgeKind =
   | "downloaded-from"
   | "related-to";
 
+// An environment zone: which side of the compromise a node belongs to.
+// This is the layer that reveals the personal -> corporate pivot structure.
+export type Zone = "personal" | "corporate" | "adversary" | "unknown";
+
 export interface Entity {
   id: string; // canonical key: `${kind}:${value}` (value lowercased)
   kind: EntityKind;
@@ -89,6 +93,8 @@ export interface Entity {
   firstSeen?: string;
   lastSeen?: string;
   matched?: boolean; // present in more than one feed (computed on merge)
+  zone?: Zone; // environment classification (auto + manual override)
+  isBridge?: boolean; // connects two different known zones = a pivot point
 }
 
 export interface Relationship {
@@ -98,6 +104,7 @@ export interface Relationship {
   kind: EdgeKind;
   feeds: string[];
   matched?: boolean; // same edge asserted by more than one feed
+  crossZone?: boolean; // endpoints sit in two different known zones
 }
 
 export interface ThreatGraph {
@@ -134,6 +141,38 @@ export function entityColor(
   if (item.matched || item.feeds.length > 1) return MATCH_COLOR;
   const idx = feedOrder.indexOf(item.feeds[0]);
   return feedColor(idx < 0 ? 0 : idx);
+}
+
+// ---- Zone (environment) color + label system ----
+
+// A distinct near-white halo marks pivot/bridge nodes regardless of color mode.
+export const BRIDGE_COLOR = "#f1f5f9";
+
+export const ZONE_ORDER: Zone[] = ["personal", "corporate", "adversary", "unknown"];
+
+export const ZONE_COLOR: Record<Zone, string> = {
+  personal: "#38bdf8", // sky
+  corporate: "#f59e0b", // amber
+  adversary: "#f87171", // red
+  unknown: "#64748b", // slate
+};
+
+export const ZONE_LABEL: Record<Zone, string> = {
+  personal: "Personal",
+  corporate: "Corporate",
+  adversary: "Adversary infra",
+  unknown: "Unclassified",
+};
+
+export const ZONE_DESC: Record<Zone, string> = {
+  personal: "Your personal accounts, devices, and services",
+  corporate: "Work identity + SaaS (Okta, Salesforce, FedEx, etc.)",
+  adversary: "Attacker-controlled or malicious infrastructure",
+  unknown: "Not yet classified into an environment",
+};
+
+export function zoneColor(zone?: Zone): string {
+  return ZONE_COLOR[zone ?? "unknown"];
 }
 
 export const ENTITY_KIND_LABEL: Record<EntityKind, string> = {
