@@ -11,48 +11,61 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { DnsRecord } from "@/lib/network-types";
+import type { EntityKind, ThreatGraph } from "@/lib/network-types";
+import { ENTITY_KIND_LABEL } from "@/lib/network-types";
 import { ingest } from "@/lib/ingest";
 
 interface UploadedFile {
   name: string;
-  recordCount: number;
-  records: DnsRecord[];
+  entityCount: number;
+  edgeCount: number;
+  graph: ThreatGraph;
   format: string;
 }
 
-interface UploadPanelProps {
-  onAnalyze: (records: DnsRecord[]) => void;
-  isLoading: boolean;
-  stats: { totalRecords: number; uniqueIps: number; uniqueDomains: number; uniqueAsns: number } | null;
+interface AnalysisStats {
+  entities: number;
+  relationships: number;
+  byKind: Record<EntityKind, number>;
+  matchedEntities: number;
+  matchedEdges: number;
+  feeds: number;
 }
 
-export function UploadPanel({
-  onAnalyze,
-  isLoading,
-  stats,
-}: UploadPanelProps) {
+interface UploadPanelProps {
+  onAnalyze: (graphs: ThreatGraph[]) => void;
+  isLoading: boolean;
+  stats: AnalysisStats | null;
+}
+
+export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const totalRecords = files.reduce((sum, f) => sum + f.recordCount, 0);
+  const totalEntities = files.reduce((sum, f) => sum + f.entityCount, 0);
 
   const processFile = useCallback((file: File) => {
     setParseError(null);
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      const { records, format } = ingest(text, file.name);
-      if (records.length > 0) {
+      const { graph, format } = ingest(text, file.name);
+      if (graph.entities.length > 0) {
         setFiles((prev) => [
           ...prev,
-          { name: file.name, recordCount: records.length, records, format },
+          {
+            name: file.name,
+            entityCount: graph.entities.length,
+            edgeCount: graph.relationships.length,
+            graph,
+            format,
+          },
         ]);
       } else {
         setParseError(
-          `Couldn't extract any indicators from "${file.name}". Supported: STIX 2.x bundles, AlienVault OTX (pulse & passive DNS), VirusTotal v3, passive-DNS JSON/JSONL, and CSV.`
+          `Couldn't extract any indicators from "${file.name}". Supported: STIX 2.x, MISP / VirusTotal Graph, OpenIOC (AlienVault OTX), passive DNS JSON/JSONL, and CSV.`
         );
       }
     };
@@ -79,10 +92,8 @@ export function UploadPanel({
   };
 
   const handleSubmit = () => {
-    const allRecords = files.flatMap((f) => f.records);
-    if (allRecords.length > 0) {
-      onAnalyze(allRecords);
-    }
+    const graphs = files.map((f) => f.graph);
+    if (graphs.length > 0) onAnalyze(graphs);
   };
 
   const clearAll = () => {
@@ -99,7 +110,7 @@ export function UploadPanel({
         </h2>
         {stats && (
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-mono text-primary">
-            {stats.uniqueAsns} orgs
+            {stats.feeds} feed{stats.feeds !== 1 ? "s" : ""}
           </span>
         )}
       </div>
@@ -130,7 +141,7 @@ export function UploadPanel({
           <span className="font-medium text-primary">browse</span>
         </span>
         <span className="text-xs text-muted-foreground/70 text-center px-2">
-          STIX, OTX, VirusTotal, passive DNS &middot; JSON / JSONL / CSV
+          STIX, MISP / VirusTotal, OpenIOC / OTX &middot; JSON / XML / CSV
         </span>
       </button>
 
@@ -138,7 +149,7 @@ export function UploadPanel({
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".json,.txt,.csv,.log,.pdf,text/*,application/json"
+        accept=".json,.xml,.txt,.csv,.log,.pdf,.ioc,text/*,application/json,application/xml"
         onChange={handleFileSelect}
         className="hidden"
       />
@@ -165,8 +176,12 @@ export function UploadPanel({
                   {file.name}
                 </span>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {file.format} &middot; {file.recordCount.toLocaleString()}{" "}
-                  indicator{file.recordCount !== 1 ? "s" : ""}
+                  {file.format} &middot; {file.entityCount.toLocaleString()}{" "}
+                  node{file.entityCount !== 1 ? "s" : ""}
+                  {file.edgeCount > 0 &&
+                    ` \u00b7 ${file.edgeCount.toLocaleString()} edge${
+                      file.edgeCount !== 1 ? "s" : ""
+                    }`}
                 </span>
               </div>
               <button
@@ -183,38 +198,61 @@ export function UploadPanel({
       )}
 
       {/* Summary */}
-      {totalRecords > 0 && (
+      {totalEntities > 0 && (
         <div className="rounded-md bg-secondary/50 px-3 py-2 text-xs text-muted-foreground font-mono">
-          {totalRecords.toLocaleString()} total records ready to analyze
+          {totalEntities.toLocaleString()} indicators across {files.length} feed
+          {files.length !== 1 ? "s" : ""} ready to map
         </div>
       )}
 
       {/* Stats after analysis */}
       {stats && (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
-            <div className="text-lg font-bold font-mono text-primary">
-              {stats.uniqueIps}
+        <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+              <div className="text-lg font-bold font-mono text-primary">
+                {stats.entities.toLocaleString()}
+              </div>
+              <div className="text-xs text-muted-foreground">Entities</div>
             </div>
-            <div className="text-xs text-muted-foreground">Unique IPs</div>
+            <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
+              <div className="text-lg font-bold font-mono text-primary">
+                {stats.relationships.toLocaleString()}
+              </div>
+              <div className="text-xs text-muted-foreground">Relationships</div>
+            </div>
           </div>
-          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
-            <div className="text-lg font-bold font-mono text-primary">
-              {stats.uniqueDomains}
+
+          {/* Match highlight */}
+          <div
+            className="rounded-md border px-3 py-2 text-center"
+            style={{
+              borderColor: "var(--match-color, #ec4899)55",
+              backgroundColor: "var(--match-color, #ec4899)10",
+            }}
+          >
+            <div
+              className="text-lg font-bold font-mono"
+              style={{ color: "var(--match-color, #ec4899)" }}
+            >
+              {stats.matchedEntities.toLocaleString()}
             </div>
-            <div className="text-xs text-muted-foreground">Domains</div>
+            <div className="text-xs text-muted-foreground">
+              Cross-feed matches
+              {stats.matchedEdges > 0 && ` \u00b7 ${stats.matchedEdges} shared edges`}
+            </div>
           </div>
-          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
-            <div className="text-lg font-bold font-mono text-primary">
-              {stats.uniqueAsns}
-            </div>
-            <div className="text-xs text-muted-foreground">ASNs / Orgs</div>
-          </div>
-          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-center">
-            <div className="text-lg font-bold font-mono text-primary">
-              {stats.totalRecords}
-            </div>
-            <div className="text-xs text-muted-foreground">Records</div>
+
+          {/* Kind breakdown */}
+          <div className="flex flex-wrap gap-1.5">
+            {(Object.keys(stats.byKind) as EntityKind[]).map((kind) => (
+              <span
+                key={kind}
+                className="rounded-full border border-border bg-secondary/40 px-2 py-0.5 text-xs font-mono text-muted-foreground"
+              >
+                {ENTITY_KIND_LABEL[kind]}: {stats.byKind[kind]}
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -224,7 +262,7 @@ export function UploadPanel({
         <Button
           type="button"
           onClick={handleSubmit}
-          disabled={isLoading || totalRecords === 0}
+          disabled={isLoading || totalEntities === 0}
           className="flex-1 min-h-[44px] gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
         >
           {isLoading ? (
@@ -232,7 +270,7 @@ export function UploadPanel({
           ) : (
             <Search className="h-4 w-4" />
           )}
-          {isLoading ? "Analyzing..." : "Map Infrastructure"}
+          {isLoading ? "Mapping..." : "Map Relationships"}
         </Button>
         {files.length > 0 && (
           <Button
