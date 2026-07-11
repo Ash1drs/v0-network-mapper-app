@@ -532,7 +532,21 @@ export function ingest(text: string, filename = ""): IngestResult {
     else if (Array.isArray(json.results)) rows = json.results;
     if (rows) {
       parseGenericRows(rows, gb);
-      return { graph: gb.build(), format: rows.some(looksNative) ? "Passive DNS" : "Generic JSON", feed };
+      const native = gb.size > 0 && rows.some(looksNative);
+      // Supplement with a deep scan so indicators in unrecognized fields
+      // (hashes, URLs, nested objects) are still captured. GraphBuilder
+      // de-dupes, so this only adds what parseGenericRows missed.
+      deepScanJson(json, gb);
+      if (gb.size) {
+        return { graph: gb.build(), format: native ? "Passive DNS" : "Generic JSON", feed };
+      }
+    }
+
+    // Unrecognized JSON shape (e.g. an unusual VirusTotal export): recursively
+    // scan every field for indicators and infer edges from co-occurrence.
+    deepScanJson(json, gb);
+    if (gb.size) {
+      return { graph: gb.build(), format: "JSON (deep-scanned)", feed };
     }
   }
 
@@ -550,7 +564,8 @@ export function ingest(text: string, filename = ""): IngestResult {
     if (rows.length) {
       const gb = new GraphBuilder(feed);
       parseGenericRows(rows, gb);
-      return { graph: gb.build(), format: "Generic JSONL", feed };
+      if (!gb.size) deepScanJson(rows, gb);
+      if (gb.size) return { graph: gb.build(), format: "Generic JSONL", feed };
     }
   }
 
@@ -634,6 +649,114 @@ function parseFreeText(text: string, feed: string): ThreatGraph {
   }
 
   return gb.build();
+}
+
+// ---------------------------------------------------------------------------
+// Deep JSON scan — fallback for arbitrary / unrecognized JSON structures
+// (e.g. an unusual VirusTotal export). Walks the whole tree, extracts
+// indicators from every string field, and links indicators that co-occur
+// inside the same object as relationships so edges are still mapped.
+// ---------------------------------------------------------------------------
+
+interface ScanHit {
+  kind: EntityKind;
+  value: string;
+}
+
+// Pull indicators out of a single string value.
+function iocsFromString(raw: string): ScanHit[] {
+  const hits: ScanHit[] = [];
+  const s = refang(String(raw)).trim();
+  if (!s || s.length > 2048) return hits;
+
+  // Whole-string exact matches — the common case for structured fields.
+  if (isIp(s)) return [{ kind: "ip", value: s }];
+  if (isHash(s)) return [{ kind: "hash", value: s.toLowerCase() }];
+  if (/^https?:\/\//i.test(s)) {
+    hits.push({ kind: "url", value: s });
+    const host = hostFromUrl(s);
+    if (host) hits.push({ kind: isIp(host) ? "ip" : "domain", value: host });
+    return hits;
+  }
+  if (/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/i.test(s)) {
+    const tld = s.toLowerCase().split(".").pop() || "";
+    if (COMMON_TLDS.has(tld)) return [{ kind: "domain", value: s.toLowerCase() }];
+  }
+
+  // Otherwise scan for indicators embedded in free-text fields.
+  for (const m of s.match(RE_URL) || []) {
+    const url = m.replace(/[.,;:)\]]+$/, "");
+    hits.push({ kind: "url", value: url });
+    const host = hostFromUrl(url);
+    if (host) hits.push({ kind: isIp(host) ? "ip" : "domain", value: host });
+  }
+  for (const m of s.match(RE_HASH) || []) hits.push({ kind: "hash", value: m.toLowerCase() });
+  for (const m of s.match(RE_IPV4) || []) hits.push({ kind: "ip", value: m });
+  for (const m of s.match(RE_DOMAIN) || []) {
+    const d = m.toLowerCase().replace(/\.$/, "");
+    if (isIp(d)) continue;
+    const tld = d.split(".").pop() || "";
+    if (COMMON_TLDS.has(tld)) hits.push({ kind: "domain", value: d });
+  }
+  return hits;
+}
+
+// Register a set of co-occurring indicators and link them with inferred edges.
+function linkCoOccurring(hits: ScanHit[], gb: GraphBuilder) {
+  if (hits.length < 1) return;
+  const uniq = new Map<string, ScanHit>();
+  for (const h of hits) uniq.set(`${h.kind}:${h.value.toLowerCase()}`, h);
+  const list = [...uniq.values()];
+  for (const h of list) gb.addEntity(h.kind, h.value);
+
+  const domains = list.filter((h) => h.kind === "domain");
+  const ips = list.filter((h) => h.kind === "ip");
+  const urls = list.filter((h) => h.kind === "url");
+  const hashes = list.filter((h) => h.kind === "hash");
+
+  // domain + ip in the same record => resolves-to (guard against blow-up).
+  if (domains.length && ips.length && domains.length * ips.length <= 16) {
+    for (const d of domains)
+      for (const i of ips)
+        gb.addRel(entityId("domain", d.value), "resolves-to", entityId("ip", i.value));
+  }
+  // url => its host.
+  for (const u of urls) {
+    const host = hostFromUrl(u.value);
+    if (!host) continue;
+    gb.addRel(entityId("url", u.value), "related-to", entityId(isIp(host) ? "ip" : "domain", host));
+  }
+  // hash co-occurring with infra => downloaded-from.
+  if (hashes.length && domains.length + ips.length <= 8) {
+    for (const h of hashes) {
+      for (const d of domains) gb.addRel(entityId("hash", h.value), "downloaded-from", entityId("domain", d.value));
+      for (const i of ips) gb.addRel(entityId("hash", h.value), "downloaded-from", entityId("ip", i.value));
+    }
+  }
+}
+
+function deepScanJson(root: any, gb: GraphBuilder, depth = 0) {
+  if (root === null || root === undefined || depth > 8) return;
+
+  if (Array.isArray(root)) {
+    for (const item of root) deepScanJson(item, gb, depth + 1);
+    return;
+  }
+  if (typeof root === "object") {
+    // Indicators found directly on this object's own primitive fields co-occur.
+    const local: ScanHit[] = [];
+    for (const key of Object.keys(root)) {
+      const v = (root as any)[key];
+      if (typeof v === "string") local.push(...iocsFromString(v));
+    }
+    linkCoOccurring(local, gb);
+    for (const key of Object.keys(root)) {
+      const v = (root as any)[key];
+      if (v && typeof v === "object") deepScanJson(v, gb, depth + 1);
+    }
+    return;
+  }
+  if (typeof root === "string") linkCoOccurring(iocsFromString(root), gb);
 }
 
 // ---------------------------------------------------------------------------
