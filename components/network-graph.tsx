@@ -412,10 +412,14 @@ export function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }: N
     animRef.current = requestAnimationFrame(draw);
   }, [draw]);
 
+  // Restart the animation loop whenever the render inputs change. This must
+  // include `graph`/`feedOrder` because the loop halts once the simulation
+  // settles (and while the empty-state placeholder has no canvas), so new data
+  // needs to explicitly kick it back off.
   useEffect(() => {
     startLoop();
     return () => cancelAnimationFrame(animRef.current);
-  }, [startLoop]);
+  }, [startLoop, graph, feedOrder]);
 
   const coords = useCallback((ev: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;

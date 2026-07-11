@@ -123,7 +123,7 @@ export default function Page() {
           </button>
 
           <div
-            className={`flex flex-col gap-6 overflow-y-auto px-4 pb-4 lg:py-4 ${
+            className={`flex flex-col gap-6 overflow-y-auto px-4 pb-4 lg:py-4 lg:flex-1 lg:min-h-0 ${
               panelOpen ? "block" : "hidden lg:block"
             }`}
           >
