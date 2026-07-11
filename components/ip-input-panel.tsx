@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import type { EntityKind, ThreatGraph } from "@/lib/network-types";
 import { ENTITY_KIND_LABEL } from "@/lib/network-types";
 import { ingest } from "@/lib/ingest";
+import { isPdf, extractPdfText } from "@/lib/pdf-text";
 
 interface UploadedFile {
   name: string;
@@ -42,35 +43,60 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [busyFile, setBusyFile] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalEntities = files.reduce((sum, f) => sum + f.entityCount, 0);
 
-  const processFile = useCallback((file: File) => {
-    setParseError(null);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      const { graph, format } = ingest(text, file.name);
+  const addGraph = useCallback(
+    (name: string, graph: ThreatGraph, format: string) => {
       if (graph.entities.length > 0) {
         setFiles((prev) => [
           ...prev,
           {
-            name: file.name,
+            name,
             entityCount: graph.entities.length,
             edgeCount: graph.relationships.length,
             graph,
             format,
           },
         ]);
-      } else {
-        setParseError(
-          `Couldn't extract any indicators from "${file.name}". Supported: STIX 2.x, MISP / VirusTotal Graph, OpenIOC (AlienVault OTX), passive DNS JSON/JSONL, and CSV.`
-        );
+        return true;
       }
-    };
-    reader.readAsText(file);
-  }, []);
+      return false;
+    },
+    []
+  );
+
+  const processFile = useCallback(
+    async (file: File) => {
+      setParseError(null);
+      try {
+        // Real PDF binaries can't be read as text; extract their text first.
+        let text: string;
+        if (await isPdf(file)) {
+          setBusyFile(file.name);
+          text = await extractPdfText(file);
+        } else {
+          text = await file.text();
+        }
+        const { graph, format } = ingest(text, file.name);
+        if (!addGraph(file.name, graph, format)) {
+          setParseError(
+            `Couldn't extract any indicators from "${file.name}". Supported: STIX 2.x, MISP / VirusTotal Graph, OpenIOC (AlienVault OTX), passive DNS JSON/JSONL, CSV, and PDF/text reports.`
+          );
+        }
+      } catch (err) {
+        console.log("[v0] processFile error:", (err as Error)?.message);
+        setParseError(
+          `Couldn't read "${file.name}". If it's a PDF, make sure it contains selectable text (not just scanned images).`
+        );
+      } finally {
+        setBusyFile(null);
+      }
+    },
+    [addGraph]
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -141,7 +167,7 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
           <span className="font-medium text-primary">browse</span>
         </span>
         <span className="text-xs text-muted-foreground/70 text-center px-2">
-          STIX, MISP / VirusTotal, OpenIOC / OTX &middot; JSON / XML / CSV
+          STIX, MISP / VirusTotal, OpenIOC / OTX &middot; JSON / XML / CSV / PDF
         </span>
       </button>
 
@@ -153,6 +179,14 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
         onChange={handleFileSelect}
         className="hidden"
       />
+
+      {/* Extracting indicator */}
+      {busyFile && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+          <span className="truncate">Extracting text from {busyFile}…</span>
+        </div>
+      )}
 
       {/* Parse error */}
       {parseError && (

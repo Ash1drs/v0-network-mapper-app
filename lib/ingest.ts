@@ -561,7 +561,79 @@ export function ingest(text: string, filename = ""): IngestResult {
     if (gb.size) return { graph: gb.build(), format: "CSV", feed };
   }
 
+  // Last resort: scan unstructured text (e.g. extracted PDF reports) for IOCs.
+  const freeText = parseFreeText(trimmed, feed);
+  if (freeText.entities.length) {
+    return { graph: freeText, format: "Text report (extracted IOCs)", feed };
+  }
+
   return { graph: { entities: [], relationships: [] }, format: "unknown", feed };
+}
+
+// ---------------------------------------------------------------------------
+// Free-text IOC extractor — for PDF reports and other unstructured text.
+// Handles defanged indicators (hxxp, evil[.]com, 1[.]2[.]3[.]4, foo(dot)bar).
+// ---------------------------------------------------------------------------
+
+// A conservative TLD allow-list keeps prose words from being read as domains.
+const COMMON_TLDS = new Set([
+  "com", "net", "org", "info", "biz", "io", "co", "gov", "edu", "mil", "int",
+  "ru", "cn", "us", "uk", "de", "fr", "nl", "jp", "kr", "br", "in", "it", "es",
+  "pl", "ca", "au", "se", "no", "fi", "dk", "ch", "at", "be", "cz", "ua", "tr",
+  "ir", "tw", "hk", "sg", "za", "mx", "eu", "top", "xyz", "online", "site",
+  "club", "shop", "app", "dev", "cc", "tk", "ml", "ga", "cf", "gq", "pw", "su",
+  "me", "tv", "cloud", "live", "icu", "vip", "work", "link", "buzz", "monster",
+]);
+
+function refang(text: string): string {
+  return text
+    .replace(/h(?:xx|tt)p(s?)(?::|\[:\]|\[colon\])?\/\//gi, "http$1://")
+    .replace(/\[\s*(?:\.|dot)\s*\]/gi, ".")
+    .replace(/\(\s*(?:\.|dot)\s*\)/gi, ".")
+    .replace(/\s(?:\.|dot)\s/gi, ".")
+    .replace(/\[\s*:\s*\]/g, ":")
+    .replace(/\[\s*@\s*\]|\(\s*at\s*\)|\[\s*at\s*\]/gi, "@")
+    .replace(/[（）]/g, "");
+}
+
+const RE_URL = /\bhttps?:\/\/[^\s"'<>()]+/gi;
+const RE_IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
+const RE_HASH = /\b[a-fA-F0-9]{64}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{32}\b/g;
+const RE_DOMAIN = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/gi;
+
+function parseFreeText(text: string, feed: string): ThreatGraph {
+  const clean = refang(text);
+  const gb = new GraphBuilder(feed);
+  const seen = new Set<string>();
+
+  const add = (kind: EntityKind, value: string) => {
+    const key = `${kind}:${value.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    gb.addEntity(kind, value);
+  };
+
+  // URLs first, and register their host as a domain/ip too.
+  for (const m of clean.match(RE_URL) || []) {
+    const url = m.replace(/[.,;:)\]]+$/, "");
+    add("url", url);
+    const host = hostFromUrl(url);
+    if (host) add(isIp(host) ? "ip" : "domain", host);
+  }
+  // File hashes (before IPs so hex strings aren't mis-scanned).
+  for (const m of clean.match(RE_HASH) || []) add("hash", m.toLowerCase());
+  // IPv4 addresses.
+  for (const m of clean.match(RE_IPV4) || []) add("ip", m);
+  // Bare domains, filtered by a known TLD to avoid false positives.
+  for (const m of clean.match(RE_DOMAIN) || []) {
+    const domain = m.toLowerCase().replace(/\.$/, "");
+    const tld = domain.split(".").pop() || "";
+    if (!COMMON_TLDS.has(tld)) continue;
+    if (isIp(domain)) continue;
+    add("domain", domain);
+  }
+
+  return gb.build();
 }
 
 // ---------------------------------------------------------------------------
