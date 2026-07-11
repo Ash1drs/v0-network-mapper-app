@@ -1,6 +1,13 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import {
+  useRef,
+  useEffect,
+  useCallback,
+  useState,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import {
   entityColor,
   MATCH_COLOR,
@@ -221,9 +228,17 @@ interface NetworkGraphProps {
   onSelectEntity: (entity: Entity | null) => void;
 }
 
-export function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }: NetworkGraphProps) {
+export interface NetworkGraphHandle {
+  // Returns the live canvas element so callers can snapshot it (PNG/PDF export).
+  getCanvas: () => HTMLCanvasElement | null;
+}
+
+export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
+  function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({ getCanvas: () => canvasRef.current }), []);
   const nodesRef = useRef<RNode[]>([]);
   const edgesRef = useRef<REdge[]>([]);
   const animRef = useRef<number>(0);
@@ -532,7 +547,7 @@ export function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }: N
       <GraphLegend />
     </div>
   );
-}
+});
 
 function GraphLegend() {
   const shapes: { kind: EntityKind; label: string }[] = [

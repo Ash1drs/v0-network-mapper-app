@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { NetworkGraph } from "@/components/network-graph";
+import { useState, useMemo, useRef } from "react";
+import { NetworkGraph, type NetworkGraphHandle } from "@/components/network-graph";
 import { UploadPanel } from "@/components/ip-input-panel";
 import { DetailPanel } from "@/components/detail-panel";
 import { GraphFilters } from "@/components/filter-controls";
 import type { Entity, EntityKind, ThreatGraph } from "@/lib/network-types";
-import { Activity, ChevronDown, ChevronUp } from "lucide-react";
+import { exportPng, canvasToPng, generatePdfReport, type ReportStats } from "@/lib/report";
+import { Activity, ChevronDown, ChevronUp, ImageDown, FileDown } from "lucide-react";
 
 interface AnalysisStats {
   entities: number;
@@ -38,6 +39,7 @@ export default function Page() {
     feeds: new Set(),
     matchedOnly: false,
   });
+  const graphRef = useRef<NetworkGraphHandle>(null);
 
   const handleAnalyze = async (graphs: ThreatGraph[]) => {
     if (graphs.length === 0) {
@@ -95,6 +97,47 @@ export default function Page() {
     return { entities, relationships };
   }, [rawGraph, filters]);
 
+  // Resolve the canvas background so exported images match the on-screen card.
+  const graphBackground = (canvas: HTMLCanvasElement) => {
+    const parentBg = canvas.parentElement
+      ? getComputedStyle(canvas.parentElement).backgroundColor
+      : "";
+    return parentBg && parentBg !== "rgba(0, 0, 0, 0)" ? parentBg : "#0f1420";
+  };
+
+  // Stats for the report reflect exactly what's visible (post-filter).
+  const reportStats = (g: ThreatGraph): ReportStats => {
+    const byKind = { domain: 0, ip: 0, url: 0, hash: 0, asn: 0 } as Record<EntityKind, number>;
+    for (const e of g.entities) byKind[e.kind]++;
+    return {
+      entities: g.entities.length,
+      relationships: g.relationships.length,
+      byKind,
+      matchedEntities: g.entities.filter((e) => e.matched).length,
+      matchedEdges: g.relationships.filter((r) => r.matched).length,
+      feeds: new Set(g.entities.flatMap((e) => e.feeds)).size,
+    };
+  };
+
+  const handleExportPng = () => {
+    const canvas = graphRef.current?.getCanvas();
+    if (!canvas) return;
+    exportPng(canvas, graphBackground(canvas));
+  };
+
+  const handleExportPdf = () => {
+    const canvas = graphRef.current?.getCanvas();
+    const image = canvas ? canvasToPng(canvas, graphBackground(canvas)) : null;
+    generatePdfReport({
+      graph: filteredGraph,
+      feedOrder,
+      stats: reportStats(filteredGraph),
+      graphImage: image,
+    });
+  };
+
+  const canExport = filteredGraph.entities.length > 0;
+
   return (
     <main className="flex min-h-dvh flex-col bg-background lg:h-dvh lg:overflow-hidden">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -150,7 +193,35 @@ export default function Page() {
         </aside>
 
         <section className="flex flex-1 flex-col p-3 lg:p-4 min-h-[350px] lg:min-h-0 lg:h-full">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <span className="text-xs font-mono text-muted-foreground">
+              {canExport
+                ? `${filteredGraph.entities.length} entities · ${filteredGraph.relationships.length} relationships`
+                : "No graph loaded"}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportPng}
+                disabled={!canExport}
+                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ImageDown className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">PNG</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                disabled={!canExport}
+                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <FileDown className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Report PDF</span>
+              </button>
+            </div>
+          </div>
           <NetworkGraph
+            ref={graphRef}
             graph={filteredGraph}
             feedOrder={feedOrder}
             selectedId={selected?.id ?? null}
