@@ -96,7 +96,7 @@ export default function Page() {
   }, [rawGraph, filters]);
 
   return (
-    <main className="flex min-h-dvh flex-col bg-background">
+    <main className="flex min-h-dvh flex-col bg-background lg:h-dvh lg:overflow-hidden">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2.5">
           <Activity className="h-5 w-5 text-primary" />
@@ -107,8 +107,8 @@ export default function Page() {
         </span>
       </header>
 
-      <div className="flex flex-1 flex-col lg:flex-row">
-        <aside className="flex flex-col border-b border-border lg:border-b-0 lg:border-r lg:w-80 xl:w-96">
+      <div className="flex flex-1 flex-col lg:flex-row lg:min-h-0 lg:overflow-hidden">
+        <aside className="flex flex-col border-b border-border lg:border-b-0 lg:border-r lg:w-80 xl:w-96 lg:min-h-0">
           <button
             type="button"
             onClick={() => setPanelOpen(!panelOpen)}
@@ -149,7 +149,7 @@ export default function Page() {
           </div>
         </aside>
 
-        <section className="flex flex-1 flex-col p-3 lg:p-4 min-h-[350px] lg:min-h-0">
+        <section className="flex flex-1 flex-col p-3 lg:p-4 min-h-[350px] lg:min-h-0 lg:h-full">
           <NetworkGraph
             graph={filteredGraph}
             feedOrder={feedOrder}
