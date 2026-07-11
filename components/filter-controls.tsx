@@ -1,12 +1,17 @@
 "use client";
 
-import { Filter, Sparkles } from "lucide-react";
+import { Filter, Sparkles, GitBranch } from "lucide-react";
 import type { GraphFilterState } from "@/app/page";
 import {
   ENTITY_KIND_LABEL,
   MATCH_COLOR,
+  BRIDGE_COLOR,
+  ZONE_COLOR,
+  ZONE_LABEL,
+  ZONE_ORDER,
   feedColor,
   type EntityKind,
+  type Zone,
 } from "@/lib/network-types";
 
 interface GraphFiltersProps {
@@ -15,6 +20,8 @@ interface GraphFiltersProps {
   filters: GraphFilterState;
   onChange: (filters: GraphFilterState) => void;
   matchedCount: number;
+  zoneCountsMap: Record<Zone, number>;
+  pivotCount: number;
 }
 
 export function GraphFilters({
@@ -23,8 +30,21 @@ export function GraphFilters({
   filters,
   onChange,
   matchedCount,
+  zoneCountsMap,
+  pivotCount,
 }: GraphFiltersProps) {
   const kinds = Object.keys(byKind) as EntityKind[];
+
+  const toggleZone = (zone: Zone) => {
+    const next = new Set(filters.zones);
+    if (next.has(zone)) next.delete(zone);
+    else next.add(zone);
+    onChange({ ...filters, zones: next });
+  };
+
+  const setPivotsOnly = (value: boolean) => {
+    onChange({ ...filters, pivotsOnly: value });
+  };
 
   const toggleKind = (kind: EntityKind) => {
     const next = new Set(filters.kinds);
@@ -80,6 +100,55 @@ export function GraphFilters({
           {matchedCount}
         </span>
       </button>
+
+      {/* Pivots-only toggle — nodes that bridge two environments */}
+      <button
+        type="button"
+        onClick={() => setPivotsOnly(!filters.pivotsOnly)}
+        className="flex items-center justify-between rounded-md border px-3 py-2 transition-colors min-h-[44px]"
+        style={{
+          borderColor: filters.pivotsOnly ? BRIDGE_COLOR : "var(--border)",
+          backgroundColor: filters.pivotsOnly ? BRIDGE_COLOR + "14" : "transparent",
+        }}
+      >
+        <span className="flex items-center gap-2">
+          <GitBranch className="h-3.5 w-3.5" style={{ color: filters.pivotsOnly ? BRIDGE_COLOR : undefined }} />
+          <span className="text-xs font-medium text-foreground">Pivot points only</span>
+        </span>
+        <span
+          className="rounded-full px-1.5 py-0.5 text-xs font-mono font-bold"
+          style={{ backgroundColor: BRIDGE_COLOR + "22", color: BRIDGE_COLOR }}
+        >
+          {pivotCount}
+        </span>
+      </button>
+
+      {/* Environment zones */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-muted-foreground">Environment (color = zone)</span>
+        <div className="flex flex-col gap-1">
+          {ZONE_ORDER.map((zone) => {
+            const active = filters.zones.has(zone);
+            const color = ZONE_COLOR[zone];
+            return (
+              <button
+                key={zone}
+                type="button"
+                onClick={() => toggleZone(zone)}
+                className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors min-h-[36px] ${
+                  active ? "border-border bg-secondary/50" : "border-border/50 opacity-50"
+                }`}
+              >
+                <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                <span className="flex-1 truncate text-xs font-medium text-foreground">
+                  {ZONE_LABEL[zone]}
+                </span>
+                <span className="text-xs font-mono text-muted-foreground">{zoneCountsMap[zone]}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Entity kinds */}
       <div className="flex flex-col gap-1.5">

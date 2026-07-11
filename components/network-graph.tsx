@@ -343,9 +343,14 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
-      ctx.strokeStyle = e.color + (focused ? "" : focusId ? "18" : e.matched ? "70" : "40");
-      ctx.lineWidth = e.matched ? 2 : 1;
+      // Cross-zone (pivot) edges are dashed + brighter so the crossover paths
+      // between environments stand out from same-zone links.
+      if (e.crossZone) ctx.setLineDash([5, 3]);
+      ctx.strokeStyle =
+        e.color + (focused ? "" : focusId ? "18" : e.crossZone ? "cc" : e.matched ? "70" : "40");
+      ctx.lineWidth = e.crossZone ? 2 : e.matched ? 2 : 1;
       ctx.stroke();
+      ctx.setLineDash([]);
 
       // edge label when connected to focused node
       if (focused) {
@@ -373,6 +378,18 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       const e = node.entity;
 
       ctx.globalAlpha = dim ? 0.28 : 1;
+
+      // pivot/bridge halo — a dashed near-white outer ring. These nodes connect
+      // two different environments and are the crossover points of the attack.
+      if (e.isBridge) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 9, 0, Math.PI * 2);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = BRIDGE_COLOR + "dd";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
       // match glow ring
       if (e.matched) {
@@ -564,12 +581,12 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
         onTouchEnd={onUp}
         className="touch-none"
       />
-      <GraphLegend />
+      <GraphLegend colorMode={colorMode} />
     </div>
   );
 });
 
-function GraphLegend() {
+function GraphLegend({ colorMode }: { colorMode: ColorMode }) {
   const shapes: { kind: EntityKind; label: string }[] = [
     { kind: "domain", label: "Domain" },
     { kind: "ip", label: "IP" },
@@ -579,17 +596,38 @@ function GraphLegend() {
   ];
   return (
     <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-border bg-card/90 px-3 py-2 text-xs backdrop-blur-sm">
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: MATCH_COLOR }} />
-        <span className="text-foreground font-medium">Match (multi-feed)</span>
-      </span>
-      <span className="text-muted-foreground/50">|</span>
-      {shapes.map((s) => (
-        <span key={s.kind} className="flex items-center gap-1.5 text-muted-foreground">
-          <ShapeIcon kind={s.kind} />
-          {s.label}
-        </span>
-      ))}
+      {colorMode === "zone" ? (
+        <>
+          {ZONE_ORDER.map((z) => (
+            <span key={z} className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: ZONE_COLOR[z] }} />
+              {ZONE_LABEL[z]}
+            </span>
+          ))}
+          <span className="text-muted-foreground/50">|</span>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-3 w-3 rounded-full border-2 border-dashed"
+              style={{ borderColor: BRIDGE_COLOR }}
+            />
+            <span className="text-foreground font-medium">Pivot (bridges zones)</span>
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: MATCH_COLOR }} />
+            <span className="text-foreground font-medium">Match (multi-feed)</span>
+          </span>
+          <span className="text-muted-foreground/50">|</span>
+          {shapes.map((s) => (
+            <span key={s.kind} className="flex items-center gap-1.5 text-muted-foreground">
+              <ShapeIcon kind={s.kind} />
+              {s.label}
+            </span>
+          ))}
+        </>
+      )}
     </div>
   );
 }

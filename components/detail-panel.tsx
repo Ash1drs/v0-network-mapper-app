@@ -14,13 +14,21 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   entityColor,
+  zoneColor,
   EDGE_KIND_LABEL,
   ENTITY_KIND_LABEL,
   MATCH_COLOR,
+  BRIDGE_COLOR,
+  ZONE_COLOR,
+  ZONE_LABEL,
+  ZONE_ORDER,
   type Entity,
   type EntityKind,
   type ThreatGraph,
+  type Zone,
 } from "@/lib/network-types";
+import type { ColorMode } from "@/app/page";
+import { GitBranch } from "lucide-react";
 
 function riskColor(score: number): string {
   if (score >= 70) return "#f87171";
@@ -47,15 +55,19 @@ function KindIcon({ kind, className }: { kind: EntityKind; className?: string })
 interface DetailPanelProps {
   graph: ThreatGraph;
   feedOrder: string[];
+  colorMode: ColorMode;
   selected: Entity | null;
   onSelect: (entity: Entity | null) => void;
+  onSetZone: (id: string, zone: Zone) => void;
 }
 
 export function DetailPanel({
   graph,
   feedOrder,
+  colorMode,
   selected,
   onSelect,
+  onSetZone,
 }: DetailPanelProps) {
   // ---- Selected entity detail view ----
   if (selected) {
@@ -73,7 +85,8 @@ export function DetailPanel({
       })
       .filter((c) => c.other);
 
-    const color = entityColor(selected, feedOrder);
+    const color =
+      colorMode === "zone" ? zoneColor(selected.zone) : entityColor(selected, feedOrder);
 
     return (
       <div className="flex flex-col gap-3">
@@ -125,6 +138,46 @@ export function DetailPanel({
               >
                 matched
               </span>
+            )}
+            {selected.isBridge && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-mono font-bold"
+                style={{ backgroundColor: BRIDGE_COLOR + "22", color: BRIDGE_COLOR }}
+              >
+                <GitBranch className="h-3 w-3" />
+                pivot
+              </span>
+            )}
+          </div>
+
+          {/* Environment zone — auto-classified, manually overridable */}
+          <div className="mb-3">
+            <span className="text-xs text-muted-foreground">Environment</span>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {ZONE_ORDER.map((z) => {
+                const active = (selected.zone ?? "unknown") === z;
+                return (
+                  <button
+                    key={z}
+                    type="button"
+                    onClick={() => onSetZone(selected.id, z)}
+                    className="rounded-md border px-2 py-1 text-xs font-medium transition-colors min-h-[32px]"
+                    style={{
+                      borderColor: active ? ZONE_COLOR[z] : "var(--border)",
+                      backgroundColor: active ? ZONE_COLOR[z] + "22" : "transparent",
+                      color: active ? ZONE_COLOR[z] : "var(--muted-foreground)",
+                    }}
+                  >
+                    {ZONE_LABEL[z]}
+                  </button>
+                );
+              })}
+            </div>
+            {selected.isBridge && (
+              <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground text-pretty">
+                This node connects more than one environment — a pivot point where
+                the compromise crossed between them.
+              </p>
             )}
           </div>
 
@@ -214,6 +267,12 @@ export function DetailPanel({
                       {direction === "out" ? " \u2192" : ""}
                     </span>
                   </div>
+                  {rel.crossZone && (
+                    <GitBranch
+                      className="h-3 w-3 shrink-0"
+                      style={{ color: BRIDGE_COLOR }}
+                    />
+                  )}
                   {rel.matched && (
                     <span
                       className="h-1.5 w-1.5 rounded-full shrink-0"
