@@ -372,12 +372,58 @@ function parseOtxPulse(indicators: any[], gb: GraphBuilder) {
   }
 }
 
+// Map a VirusTotal v3 object ({ type, id, attributes }) to a graph entity.
+// Returns the entity id (already added to the builder) or null.
+function vtAddEntity(item: any, gb: GraphBuilder): string | null {
+  if (!item) return null;
+  const attrs = item.attributes || {};
+  const risk = clampRisk(attrs.last_analysis_stats?.malicious ?? 0);
+
+  switch (item.type) {
+    case "ip_address":
+      return gb.addEntity("ip", item.id || attrs.ip_address || "", {
+        riskScore: risk,
+        asn: normalizeAsn(attrs.asn),
+        asName: attrs.as_owner || "",
+      });
+    case "domain":
+      return gb.addEntity("domain", item.id || "", { riskScore: risk });
+    case "file":
+      return gb.addEntity("hash", attrs.sha256 || attrs.sha1 || attrs.md5 || item.id || "", { riskScore: risk });
+    case "url":
+      return gb.addEntity("url", attrs.url || item.id || "", { riskScore: risk });
+    default:
+      // Fall back to inferring the kind from the id value.
+      if (item.id && isIp(item.id)) return gb.addEntity("ip", item.id, { riskScore: risk });
+      if (item.id && isHash(item.id)) return gb.addEntity("hash", item.id, { riskScore: risk });
+      if (item.id) return gb.addEntity("domain", item.id, { riskScore: risk });
+      return null;
+  }
+}
+
+// VT v3 relationship name -> how to connect the related item to the parent.
+// dir "from-parent": parent -> related; "to-parent": related -> parent.
+const VT_REL_MAP: Record<string, { kind: EdgeKind; dir: "from-parent" | "to-parent" }> = {
+  resolutions: { kind: "resolves-to", dir: "from-parent" },
+  subdomains: { kind: "sub-domain-of", dir: "to-parent" },
+  siblings: { kind: "sibling-of", dir: "from-parent" },
+  communicating_files: { kind: "communicates-with", dir: "to-parent" },
+  downloaded_files: { kind: "downloaded-from", dir: "to-parent" },
+  referrer_files: { kind: "related-to", dir: "to-parent" },
+  contacted_domains: { kind: "communicates-with", dir: "from-parent" },
+  contacted_ips: { kind: "communicates-with", dir: "from-parent" },
+  contacted_urls: { kind: "related-to", dir: "from-parent" },
+  urls: { kind: "related-to", dir: "from-parent" },
+};
+
 function parseVirusTotalV3(body: any, gb: GraphBuilder) {
   const items = Array.isArray(body.data) ? body.data : [body.data];
   for (const item of items) {
     if (!item) continue;
     const attrs = item.attributes || {};
     const risk = clampRisk(attrs.last_analysis_stats?.malicious ?? 0);
+
+    // Legacy resolution object (host_name + ip_address on the same record).
     if (attrs.host_name || attrs.ip_address) {
       gb.addResolution(attrs.host_name || "", attrs.ip_address || "", {
         risk,
@@ -385,10 +431,57 @@ function parseVirusTotalV3(body: any, gb: GraphBuilder) {
         asName: attrs.as_owner || "",
         firstSeen: attrs.date ? String(attrs.date) : "",
       });
-    } else if (item.type === "ip_address" || (item.id && isIp(item.id))) {
-      gb.addEntity("ip", item.id || "", { riskScore: risk, asn: normalizeAsn(attrs.asn), asName: attrs.as_owner || "" });
-    } else if (item.type === "domain" || item.id) {
-      gb.addEntity("domain", item.id || "", { riskScore: risk });
+      continue;
+    }
+
+    // The primary object (domain / ip / file / url).
+    const parentId = vtAddEntity(item, gb);
+    const parentKind = item.type === "ip_address" ? "ip" : item.type;
+
+    // DNS records embedded on a domain object (A/AAAA/CNAME/MX/NS).
+    if (parentKind === "domain" && Array.isArray(attrs.last_dns_records)) {
+      for (const rec of attrs.last_dns_records) {
+        const val = String(rec?.value || "");
+        if (!val) continue;
+        const t = String(rec?.type || "").toUpperCase();
+        if (t === "A" || t === "AAAA") {
+          gb.addRel(parentId, "resolves-to", gb.addEntity("ip", val));
+        } else if (t === "CNAME" || t === "MX" || t === "NS") {
+          gb.addRel(parentId, "related-to", gb.addEntity("domain", val.replace(/\.$/, "")));
+        }
+      }
+    }
+
+    // The relationships block — the core of a VT v3 export.
+    const rels = item.relationships || {};
+    for (const [name, block] of Object.entries<any>(rels)) {
+      const spec = VT_REL_MAP[name];
+      const data = (block as any)?.data;
+      if (!spec || !data) continue;
+      const relItems = Array.isArray(data) ? data : [data];
+      for (const rel of relItems) {
+        // "resolution" pseudo-objects carry both endpoints in attributes.
+        if (rel?.type === "resolution") {
+          const ra = rel.attributes || {};
+          gb.addResolution(ra.host_name || "", ra.ip_address || "", {
+            asn: normalizeAsn(ra.asn),
+            asName: ra.as_owner || "",
+          });
+          continue;
+        }
+        const relId = vtAddEntity(rel, gb);
+        if (!relId || !parentId) continue;
+        // Orient resolves-to consistently as domain -> ip when applicable.
+        if (name === "resolutions") {
+          const dom = parentKind === "domain" ? parentId : relId;
+          const ip = parentKind === "domain" ? relId : parentId;
+          gb.addRel(dom, "resolves-to", ip);
+        } else if (spec.dir === "from-parent") {
+          gb.addRel(parentId, spec.kind, relId);
+        } else {
+          gb.addRel(relId, spec.kind, parentId);
+        }
+      }
     }
   }
 }
