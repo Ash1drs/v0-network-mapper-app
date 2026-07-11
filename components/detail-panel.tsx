@@ -245,7 +245,7 @@ export function DetailPanel({
             )}
             {connections.map(({ rel, other, direction }) => {
               if (!other) return null;
-              const oc = entityColor(other, feedOrder);
+              const oc = colorMode === "zone" ? zoneColor(other.zone) : entityColor(other, feedOrder);
               return (
                 <button
                   key={rel.id}
@@ -330,7 +330,8 @@ export function DetailPanel({
       </h2>
       <div className="flex flex-col gap-1.5 max-h-[50vh] overflow-y-auto">
         {top.map((entity) => {
-          const color = entityColor(entity, feedOrder);
+          const color =
+            colorMode === "zone" ? zoneColor(entity.zone) : entityColor(entity, feedOrder);
           const deg = degree.get(entity.id) || 0;
           return (
             <button

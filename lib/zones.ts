@@ -127,12 +127,13 @@ export function applyZones(graph: ThreatGraph, overrides: ZoneOverrides = {}): T
     return { ...r, crossZone };
   });
 
-  const entities = zonedEntities.map((e) => {
-    const known = new Set<Zone>();
-    if (e.zone && e.zone !== "unknown") known.add(e.zone);
-    for (const z of neighborZones.get(e.id) ?? []) known.add(z);
-    return { ...e, isBridge: known.size >= 2 };
-  });
+  // A pivot is a node whose direct neighbors span >= 2 different known zones.
+  // (Using neighbor diversity rather than "touches another zone" keeps leaf
+  // nodes from being flagged — only genuine crossover nodes light up.)
+  const entities = zonedEntities.map((e) => ({
+    ...e,
+    isBridge: (neighborZones.get(e.id)?.size ?? 0) >= 2,
+  }));
 
   return { entities, relationships };
 }
