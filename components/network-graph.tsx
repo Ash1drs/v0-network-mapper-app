@@ -1,188 +1,140 @@
 "use client";
 
 import { useRef, useEffect, useCallback, useState } from "react";
-import { clusterLabel, type GraphNode, type GraphEdge, type AsnGroup } from "@/lib/network-types";
+import {
+  entityColor,
+  MATCH_COLOR,
+  EDGE_KIND_LABEL,
+  type EntityKind,
+  type ThreatGraph,
+  type Entity,
+} from "@/lib/network-types";
 
-function riskColor(score: number): string {
-  if (score >= 70) return "#f87171";
-  if (score >= 40) return "#fbbf24";
-  if (score >= 20) return "#38bdf8";
-  return "#4ade80";
+// A rendered node carries live simulation state alongside its entity.
+interface RNode {
+  id: string;
+  entity: Entity;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  color: string;
+  degree: number;
 }
 
-function buildGraph(groups: AsnGroup[], width: number, height: number): {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-} {
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
+interface REdge {
+  source: string;
+  target: string;
+  kind: string;
+  color: string;
+  matched: boolean;
+}
+
+const KIND_RADIUS: Record<EntityKind, number> = {
+  asn: 13,
+  ip: 9,
+  domain: 7,
+  url: 7,
+  hash: 6,
+};
+
+// Cap the rendered graph so large feeds stay legible + performant.
+const MAX_NODES = 350;
+
+function buildRenderGraph(
+  graph: ThreatGraph,
+  feedOrder: string[],
+  width: number,
+  height: number,
+): { nodes: RNode[]; edges: REdge[] } {
+  // Degree map for sizing + capping.
+  const degree = new Map<string, number>();
+  for (const r of graph.relationships) {
+    degree.set(r.source, (degree.get(r.source) || 0) + 1);
+    degree.set(r.target, (degree.get(r.target) || 0) + 1);
+  }
+
+  let entities = graph.entities;
+  if (entities.length > MAX_NODES) {
+    entities = [...entities]
+      .sort((a, b) => {
+        // Keep matches and high-degree nodes first.
+        const am = a.matched ? 1 : 0;
+        const bm = b.matched ? 1 : 0;
+        if (am !== bm) return bm - am;
+        return (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
+      })
+      .slice(0, MAX_NODES);
+  }
+  const keep = new Set(entities.map((e) => e.id));
 
   const cx = width / 2;
   const cy = height / 2;
-  // Spread ASN hubs evenly around a large ring for a stable starting layout
-  const asnRingRadius = Math.min(width, height) * 0.35;
+  const ringRadius = Math.min(width, height) * 0.38;
 
-  for (let gi = 0; gi < groups.length; gi++) {
-    const group = groups[gi];
-    // ASN hub node
-    const asnId = `asn-${group.asn}`;
-    const angle = (gi / groups.length) * Math.PI * 2 - Math.PI / 2;
-    const dist = asnRingRadius + (Math.random() - 0.5) * 30;
-    nodes.push({
-      id: asnId,
-      label: group.asName.length > 24 ? group.asName.slice(0, 22) + "..." : group.asName,
-      type: "asn",
+  const nodes: RNode[] = entities.map((e, i) => {
+    const deg = degree.get(e.id) || 0;
+    const angle = (i / entities.length) * Math.PI * 2;
+    // Matched nodes start near the center so overlaps are visually central.
+    const dist = (e.matched ? ringRadius * 0.35 : ringRadius) + (Math.random() - 0.5) * 60;
+    return {
+      id: e.id,
+      entity: e,
       x: cx + Math.cos(angle) * dist,
       y: cy + Math.sin(angle) * dist,
       vx: 0,
       vy: 0,
-      radius: Math.min(14 + group.ips.length * 2, 36),
-      color: group.color,
-      riskScore: group.maxRiskScore,
-      asnGroup: group,
-    });
+      radius: KIND_RADIUS[e.kind] + Math.min(deg, 6),
+      color: entityColor(e, feedOrder),
+      degree: deg,
+    };
+  });
 
-    // IP nodes radiating from ASN
-    for (let i = 0; i < group.ips.length; i++) {
-      const ip = group.ips[i];
-      const ipId = `ip-${ip}`;
-      const ipAngle = angle + ((i / group.ips.length) * Math.PI * 2) / groups.length - Math.PI / groups.length;
-      const ipDist = 40 + Math.random() * 60;
-      const parentNode = nodes.find((n) => n.id === asnId)!;
-
-      // Find the records for this IP to get its risk
-      const ipRecords = group.records.filter((r) => r.answer === ip);
-      const ipRisk = ipRecords.length > 0 ? Math.max(...ipRecords.map((r) => r.answer_risk_score)) : 0;
-
-      nodes.push({
-        id: ipId,
-        label: ip,
-        type: "ip",
-        x: parentNode.x + Math.cos(ipAngle) * ipDist,
-        y: parentNode.y + Math.sin(ipAngle) * ipDist,
-        vx: 0,
-        vy: 0,
-        radius: 8,
-        color: group.color,
-        riskScore: ipRisk,
-      });
-
-      edges.push({ source: asnId, target: ipId, color: group.color });
-
-      // Domain nodes branching from IPs (limit to avoid overload)
-      const domainsForIp = ipRecords.map((r) => r.query).filter(Boolean);
-      const uniqueDomains = [...new Set(domainsForIp)].slice(0, 3);
-
-      for (let d = 0; d < uniqueDomains.length; d++) {
-        const domain = uniqueDomains[d];
-        const domainId = `dom-${domain}-${ip}`;
-        const domAngle = ipAngle + ((d - uniqueDomains.length / 2) * 0.4);
-        const domDist = 25 + Math.random() * 20;
-        const ipNode = nodes.find((n) => n.id === ipId)!;
-
-        const domRecord = ipRecords.find((r) => r.query === domain);
-        const domRisk = domRecord?.query_risk_score ?? 0;
-
-        nodes.push({
-          id: domainId,
-          label: domain.length > 20 ? domain.slice(0, 18) + "..." : domain,
-          type: "domain",
-          x: ipNode.x + Math.cos(domAngle) * domDist,
-          y: ipNode.y + Math.sin(domAngle) * domDist,
-          vx: 0,
-          vy: 0,
-          radius: 5,
-          color: riskColor(domRisk),
-          riskScore: domRisk,
-          data: domRecord,
-        });
-
-        edges.push({ source: ipId, target: domainId, color: group.color + "60" });
-      }
-    }
-
-    // Domains with no resolved IP -> attach directly to the cluster hub so
-    // relationship-only feeds (VT Graph / MISP with no ASN) still render.
-    const domainOnly = group.records
-      .filter((r) => r.query && !r.answer)
-      .map((r) => r.query);
-    const seenDomains = new Set<string>();
-    const uniqueDomainOnly = domainOnly.filter((d) => {
-      if (seenDomains.has(d)) return false;
-      seenDomains.add(d);
-      return true;
-    });
-
-    const hub = nodes.find((n) => n.id === asnId)!;
-    for (let i = 0; i < uniqueDomainOnly.length; i++) {
-      const domain = uniqueDomainOnly[i];
-      const domainId = `dom-${domain}`;
-      const domAngle = angle + ((i / Math.max(uniqueDomainOnly.length, 1)) * Math.PI * 2) / groups.length - Math.PI / groups.length;
-      const domDist = 55 + Math.random() * 55;
-
-      const domRecord = group.records.find((r) => r.query === domain && !r.answer);
-      const domRisk = domRecord?.query_risk_score ?? 0;
-
-      nodes.push({
-        id: domainId,
-        label: domain.length > 20 ? domain.slice(0, 18) + "..." : domain,
-        type: "domain",
-        x: hub.x + Math.cos(domAngle) * domDist,
-        y: hub.y + Math.sin(domAngle) * domDist,
-        vx: 0,
-        vy: 0,
-        radius: 5,
-        color: riskColor(domRisk),
-        riskScore: domRisk,
-        data: domRecord,
-      });
-
-      edges.push({ source: asnId, target: domainId, color: group.color + "50" });
-    }
-  }
+  const edges: REdge[] = graph.relationships
+    .filter((r) => keep.has(r.source) && keep.has(r.target))
+    .map((r) => ({
+      source: r.source,
+      target: r.target,
+      kind: r.kind,
+      matched: !!r.matched,
+      color: r.matched ? MATCH_COLOR : entityColor({ feeds: r.feeds }, feedOrder),
+    }));
 
   return { nodes, edges };
 }
 
-// Simulation state -- temperature cools the sim so it settles
+// ---- force simulation (module-level cooling temperature) ----
 let simTemperature = 1.0;
-const SIM_COOL_RATE = 0.97; // multiply each tick
-const SIM_MIN_TEMP = 0.001; // below this, sim is frozen
+const SIM_COOL_RATE = 0.985;
+const SIM_MIN_TEMP = 0.001;
 
-function resetSimTemperature() {
+function resetSim() {
   simTemperature = 1.0;
 }
-
-function isSimSettled() {
+function simSettled() {
   return simTemperature < SIM_MIN_TEMP;
 }
 
-function simulateForces(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  width: number,
-  height: number
-) {
-  if (simTemperature < SIM_MIN_TEMP) return;
-
-  const REPULSION = 2000;
-  const ATTRACTION = 0.01;
-  const DAMPING = 0.55;
-  const CENTER_GRAVITY = 0.008;
+function simulate(nodes: RNode[], edges: REdge[], width: number, height: number) {
+  if (simSettled()) return;
+  const REPULSION = 1600;
+  const ATTRACTION = 0.012;
+  const DAMPING = 0.6;
+  const GRAVITY = 0.01;
   const temp = simTemperature;
-
   const cx = width / 2;
   const cy = height / 2;
 
-  // Repulsion between ASN and IP nodes only (skip domain-to-domain)
-  for (let i = 0; i < nodes.length; i++) {
-    if (nodes[i].type === "domain") continue;
-    for (let j = i + 1; j < nodes.length; j++) {
-      if (nodes[j].type === "domain") continue;
+  const n = nodes.length;
+  // Repulsion (skip when huge to stay responsive).
+  const doAllPairs = n <= 250;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (!doAllPairs && Math.random() > 0.5) continue;
       const dx = nodes[i].x - nodes[j].x;
       const dy = nodes[i].y - nodes[j].y;
-      const distSq = dx * dx + dy * dy;
-      const dist = Math.max(Math.sqrt(distSq), 1);
+      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
       const force = (REPULSION * temp) / (dist * dist);
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
@@ -193,83 +145,115 @@ function simulateForces(
     }
   }
 
-  // Attraction along edges
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  for (const edge of edges) {
-    const source = nodeMap.get(edge.source);
-    const target = nodeMap.get(edge.target);
-    if (!source || !target) continue;
-    const dx = target.x - source.x;
-    const dy = target.y - source.y;
+  const map = new Map(nodes.map((nd) => [nd.id, nd]));
+  for (const e of edges) {
+    const s = map.get(e.source);
+    const t = map.get(e.target);
+    if (!s || !t) continue;
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
     const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-    const idealDist = source.type === "asn" || target.type === "asn" ? 80 : 35;
-    const force = (dist - idealDist) * ATTRACTION * temp;
+    const force = (dist - 70) * ATTRACTION * temp;
     const fx = (dx / dist) * force;
     const fy = (dy / dist) * force;
-    source.vx += fx;
-    source.vy += fy;
-    target.vx -= fx;
-    target.vy -= fy;
+    s.vx += fx;
+    s.vy += fy;
+    t.vx -= fx;
+    t.vy -= fy;
   }
 
-  for (const node of nodes) {
-    node.vx += (cx - node.x) * CENTER_GRAVITY * temp;
-    node.vy += (cy - node.y) * CENTER_GRAVITY * temp;
-    node.vx *= DAMPING;
-    node.vy *= DAMPING;
-    node.x += node.vx;
-    node.y += node.vy;
-    node.x = Math.max(node.radius + 4, Math.min(width - node.radius - 4, node.x));
-    node.y = Math.max(node.radius + 4, Math.min(height - node.radius - 4, node.y));
+  for (const nd of nodes) {
+    nd.vx += (cx - nd.x) * GRAVITY * temp;
+    nd.vy += (cy - nd.y) * GRAVITY * temp;
+    nd.vx *= DAMPING;
+    nd.vy *= DAMPING;
+    nd.x += nd.vx;
+    nd.y += nd.vy;
+    nd.x = Math.max(nd.radius + 4, Math.min(width - nd.radius - 4, nd.x));
+    nd.y = Math.max(nd.radius + 4, Math.min(height - nd.radius - 4, nd.y));
   }
-
   simTemperature *= SIM_COOL_RATE;
 }
 
-interface NetworkGraphProps {
-  groups: AsnGroup[];
-  onSelectGroup: (group: AsnGroup | null) => void;
+function drawShape(
+  ctx: CanvasRenderingContext2D,
+  kind: EntityKind,
+  x: number,
+  y: number,
+  r: number,
+) {
+  ctx.beginPath();
+  switch (kind) {
+    case "ip": // square
+      ctx.rect(x - r, y - r, r * 2, r * 2);
+      break;
+    case "url": // triangle
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y + r);
+      ctx.lineTo(x - r, y + r);
+      ctx.closePath();
+      break;
+    case "hash": // diamond
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      break;
+    case "asn": // hexagon
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i - Math.PI / 6;
+        const px = x + Math.cos(a) * r;
+        const py = y + Math.sin(a) * r;
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    default: // domain -> circle
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+  }
 }
 
-export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
+interface NetworkGraphProps {
+  graph: ThreatGraph;
+  feedOrder: string[];
+  selectedId: string | null;
+  onSelectEntity: (entity: Entity | null) => void;
+}
+
+export function NetworkGraph({ graph, feedOrder, selectedId, onSelectEntity }: NetworkGraphProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const nodesRef = useRef<GraphNode[]>([]);
-  const edgesRef = useRef<GraphEdge[]>([]);
-  const animFrameRef = useRef<number>(0);
-  const dragNodeRef = useRef<GraphNode | null>(null);
-  const hoveredNodeRef = useRef<GraphNode | null>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 500 });
+  const nodesRef = useRef<RNode[]>([]);
+  const edgesRef = useRef<REdge[]>([]);
+  const animRef = useRef<number>(0);
+  const dragRef = useRef<RNode | null>(null);
+  const hoverRef = useRef<RNode | null>(null);
+  const needsRedraw = useRef(true);
+  const [size, setSize] = useState({ width: 800, height: 500 });
 
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) {
-        setCanvasSize({
-          width: entry.contentRect.width,
-          height: Math.max(entry.contentRect.height, 300),
-        });
-      }
+      const e = entries[0];
+      if (e) setSize({ width: e.contentRect.width, height: Math.max(e.contentRect.height, 300) });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
 
-  const needsRedrawRef = useRef(true);
-
   useEffect(() => {
-    if (groups.length === 0) {
+    if (graph.entities.length === 0) {
       nodesRef.current = [];
       edgesRef.current = [];
       return;
     }
-    const { nodes, edges } = buildGraph(groups, canvasSize.width, canvasSize.height);
+    const { nodes, edges } = buildRenderGraph(graph, feedOrder, size.width, size.height);
     nodesRef.current = nodes;
     edgesRef.current = edges;
-    resetSimTemperature();
-    needsRedrawRef.current = true;
-  }, [groups, canvasSize.width, canvasSize.height]);
+    resetSim();
+    needsRedraw.current = true;
+  }, [graph, feedOrder, size.width, size.height]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -277,249 +261,238 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvasSize.width * dpr;
-    canvas.height = canvasSize.height * dpr;
+    canvas.width = size.width * dpr;
+    canvas.height = size.height * dpr;
     ctx.scale(dpr, dpr);
 
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
+    const active = !simSettled();
+    if (nodes.length && active) simulate(nodes, edges, size.width, size.height);
 
-    const simActive = !isSimSettled();
-    if (nodes.length > 0 && simActive) {
-      simulateForces(nodes, edges, canvasSize.width, canvasSize.height);
-    }
+    ctx.clearRect(0, 0, size.width, size.height);
 
-    ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-
-    // Subtle grid
-    ctx.strokeStyle = "rgba(100, 120, 140, 0.04)";
+    // grid
+    ctx.strokeStyle = "rgba(100, 120, 140, 0.05)";
     ctx.lineWidth = 1;
-    for (let x = 0; x < canvasSize.width; x += 40) {
+    for (let x = 0; x < size.width; x += 40) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvasSize.height);
+      ctx.lineTo(x, size.height);
       ctx.stroke();
     }
-    for (let y = 0; y < canvasSize.height; y += 40) {
+    for (let y = 0; y < size.height; y += 40) {
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(canvasSize.width, y);
+      ctx.lineTo(size.width, y);
       ctx.stroke();
     }
 
-    // Edges
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-    for (const edge of edges) {
-      const source = nodeMap.get(edge.source);
-      const target = nodeMap.get(edge.target);
-      if (!source || !target) continue;
+    const map = new Map(nodes.map((n) => [n.id, n]));
+    const hovered = hoverRef.current;
+    const focusId = hovered?.id || selectedId;
+    const neighborIds = new Set<string>();
+    if (focusId) {
+      for (const e of edges) {
+        if (e.source === focusId) neighborIds.add(e.target);
+        if (e.target === focusId) neighborIds.add(e.source);
+      }
+    }
+
+    // edges
+    for (const e of edges) {
+      const s = map.get(e.source);
+      const t = map.get(e.target);
+      if (!s || !t) continue;
+      const focused = focusId && (e.source === focusId || e.target === focusId);
       ctx.beginPath();
-      ctx.moveTo(source.x, source.y);
-      ctx.lineTo(target.x, target.y);
-      ctx.strokeStyle = edge.color + "30";
-      ctx.lineWidth = 1;
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.strokeStyle = e.color + (focused ? "" : focusId ? "18" : e.matched ? "70" : "40");
+      ctx.lineWidth = e.matched ? 2 : 1;
       ctx.stroke();
+
+      // edge label when connected to focused node
+      if (focused) {
+        const mx = (s.x + t.x) / 2;
+        const my = (s.y + t.y) / 2;
+        ctx.fillStyle = "rgba(15,18,30,0.85)";
+        const label = EDGE_KIND_LABEL[e.kind as keyof typeof EDGE_KIND_LABEL] || e.kind;
+        ctx.font = "9px Geist, sans-serif";
+        const w = ctx.measureText(label).width + 8;
+        ctx.beginPath();
+        ctx.roundRect(mx - w / 2, my - 7, w, 14, 3);
+        ctx.fill();
+        ctx.fillStyle = e.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, mx, my);
+      }
     }
 
-    const hovered = hoveredNodeRef.current;
-
-    // Nodes
+    // nodes
     for (const node of nodes) {
       const isHovered = hovered?.id === node.id;
+      const isSelected = selectedId === node.id;
+      const dim = focusId && !isHovered && !isSelected && !neighborIds.has(node.id);
+      const e = node.entity;
 
-      if (isHovered || node.type === "asn") {
+      ctx.globalAlpha = dim ? 0.28 : 1;
+
+      // match glow ring
+      if (e.matched) {
         ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius + (isHovered ? 8 : 4), 0, Math.PI * 2);
-        ctx.fillStyle = node.color + (isHovered ? "25" : "10");
+        ctx.arc(node.x, node.y, node.radius + 6, 0, Math.PI * 2);
+        ctx.fillStyle = MATCH_COLOR + "22";
         ctx.fill();
-      }
-
-      // Risk ring for high-risk nodes
-      if (node.riskScore >= 70) {
         ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius + 2, 0, Math.PI * 2);
-        ctx.strokeStyle = "#f8717180";
-        ctx.lineWidth = 2;
+        ctx.arc(node.x, node.y, node.radius + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = MATCH_COLOR;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       }
 
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.fillStyle =
-        node.type === "domain"
-          ? node.color + "15"
-          : node.type === "ip"
-          ? node.color + "20"
-          : node.color + "30";
+      // high-risk secondary ring
+      if (e.riskScore >= 70 && !e.matched) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 3, 0, Math.PI * 2);
+        ctx.strokeStyle = "#f8717199";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // shape body
+      drawShape(ctx, e.kind, node.x, node.y, node.radius);
+      ctx.fillStyle = node.color + "26";
       ctx.fill();
       ctx.strokeStyle = node.color;
-      ctx.lineWidth = isHovered ? 2.5 : 1;
+      ctx.lineWidth = isHovered || isSelected ? 2.5 : 1.25;
       ctx.stroke();
 
-      // Inner label
-      ctx.fillStyle = node.color;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-
-      if (node.type === "asn") {
-        ctx.font = `bold ${Math.max(8, node.radius * 0.45)}px Geist, sans-serif`;
-        const parts = node.label.split(/[\s,]+/);
-        ctx.fillText(parts[0].slice(0, 8), node.x, node.y);
-      } else if (node.type === "ip") {
-        ctx.font = "bold 6px Geist Mono, monospace";
-        const parts = node.label.split(".");
-        ctx.fillText(parts[2] + "." + parts[3], node.x, node.y);
-      }
-      // domains are too small for labels inside
-
-      // Label below hub nodes only (to avoid clutter)
-      if (node.type === "asn") {
-        ctx.fillStyle = node.color + "bb";
-        ctx.font = "10px Geist, sans-serif";
-        ctx.fillText(
-          clusterLabel(node.asnGroup?.asn || "?"),
-          node.x,
-          node.y + node.radius + 12
-        );
+      // asn label inside
+      if (e.kind === "asn") {
+        ctx.fillStyle = node.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "bold 7px Geist Mono, monospace";
+        ctx.fillText(e.value.replace(/^AS/, "").slice(0, 6), node.x, node.y);
       }
 
-      // Show IP label on hover
-      if (isHovered && node.type !== "asn") {
-        ctx.fillStyle = "#e2e8f0";
+      ctx.globalAlpha = 1;
+
+      // hover/selected tooltip
+      if (isHovered || isSelected) {
+        const label = e.value.length > 32 ? e.value.slice(0, 30) + "…" : e.value;
         ctx.font = "bold 10px Geist Mono, monospace";
-        const labelWidth = ctx.measureText(node.label).width + 12;
-        const lx = node.x - labelWidth / 2;
-        const ly = node.y - node.radius - 22;
-        ctx.fillStyle = "rgba(15, 15, 30, 0.9)";
+        const w = ctx.measureText(label).width + 14;
+        const lx = node.x - w / 2;
+        const ly = node.y - node.radius - 24;
+        ctx.fillStyle = "rgba(12,14,24,0.94)";
         ctx.beginPath();
-        ctx.roundRect(lx, ly, labelWidth, 18, 4);
+        ctx.roundRect(lx, ly, w, 18, 4);
         ctx.fill();
-        ctx.strokeStyle = node.color + "80";
+        ctx.strokeStyle = node.color + "cc";
         ctx.lineWidth = 1;
         ctx.stroke();
         ctx.fillStyle = "#e2e8f0";
-        ctx.fillText(node.label, node.x, ly + 9);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, node.x, ly + 9);
       }
     }
 
-    // Only keep looping if sim is still cooling or user is dragging
-    if (simActive || dragNodeRef.current || needsRedrawRef.current) {
-      needsRedrawRef.current = false;
-      animFrameRef.current = requestAnimationFrame(draw);
+    if (active || dragRef.current || needsRedraw.current) {
+      needsRedraw.current = false;
+      animRef.current = requestAnimationFrame(draw);
     }
-  }, [canvasSize]);
+  }, [size, selectedId]);
 
-  // Kick off the loop whenever draw changes or we need a redraw
   const startLoop = useCallback(() => {
-    cancelAnimationFrame(animFrameRef.current);
-    animFrameRef.current = requestAnimationFrame(draw);
+    cancelAnimationFrame(animRef.current);
+    animRef.current = requestAnimationFrame(draw);
   }, [draw]);
 
   useEffect(() => {
     startLoop();
-    return () => cancelAnimationFrame(animFrameRef.current);
+    return () => cancelAnimationFrame(animRef.current);
   }, [startLoop]);
 
-  const getNodeAt = useCallback(
-    (x: number, y: number): GraphNode | null => {
-      const nodes = nodesRef.current;
-      for (let i = nodes.length - 1; i >= 0; i--) {
-        const n = nodes[i];
-        const dx = x - n.x;
-        const dy = y - n.y;
-        if (dx * dx + dy * dy <= (n.radius + 6) * (n.radius + 6)) {
-          return n;
-        }
-      }
-      return null;
-    },
-    []
-  );
-
-  const getCanvasCoords = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return { x: 0, y: 0 };
-      const rect = canvas.getBoundingClientRect();
-      if ("touches" in e) {
-        return {
-          x: e.touches[0].clientX - rect.left,
-          y: e.touches[0].clientY - rect.top,
-        };
-      }
-      return {
-        x: (e as React.MouseEvent).clientX - rect.left,
-        y: (e as React.MouseEvent).clientY - rect.top,
-      };
-    },
-    []
-  );
-
-  const handlePointerDown = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      const coords = getCanvasCoords(e);
-      const node = getNodeAt(coords.x, coords.y);
-      if (node) {
-        dragNodeRef.current = node;
-        // Gently reheat so neighbors settle around dragged node
-        simTemperature = Math.max(simTemperature, 0.15);
-        startLoop();
-        if (node.type === "asn" && node.asnGroup) {
-          onSelectGroup(node.asnGroup);
-        }
-      }
-    },
-    [getCanvasCoords, getNodeAt, onSelectGroup, startLoop]
-  );
-
-  const handlePointerMove = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      const coords = getCanvasCoords(e);
-      const node = getNodeAt(coords.x, coords.y);
-      const prevHovered = hoveredNodeRef.current;
-      hoveredNodeRef.current = node;
-
-      if (dragNodeRef.current) {
-        dragNodeRef.current.x = coords.x;
-        dragNodeRef.current.y = coords.y;
-        dragNodeRef.current.vx = 0;
-        dragNodeRef.current.vy = 0;
-      }
-
-      // Redraw for hover tooltip changes (even when sim is settled)
-      if (prevHovered?.id !== node?.id || dragNodeRef.current) {
-        needsRedrawRef.current = true;
-        startLoop();
-      }
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.style.cursor = node ? "pointer" : "default";
-      }
-    },
-    [getCanvasCoords, getNodeAt, startLoop]
-  );
-
-  const handlePointerUp = useCallback(() => {
-    dragNodeRef.current = null;
+  const coords = useCallback((ev: React.MouseEvent | React.TouchEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    if ("touches" in ev)
+      return { x: ev.touches[0].clientX - rect.left, y: ev.touches[0].clientY - rect.top };
+    return {
+      x: (ev as React.MouseEvent).clientX - rect.left,
+      y: (ev as React.MouseEvent).clientY - rect.top,
+    };
   }, []);
 
-  if (groups.length === 0) {
+  const nodeAt = useCallback((x: number, y: number): RNode | null => {
+    const nodes = nodesRef.current;
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const dx = x - n.x;
+      const dy = y - n.y;
+      if (dx * dx + dy * dy <= (n.radius + 6) * (n.radius + 6)) return n;
+    }
+    return null;
+  }, []);
+
+  const onDown = useCallback(
+    (ev: React.MouseEvent | React.TouchEvent) => {
+      const c = coords(ev);
+      const node = nodeAt(c.x, c.y);
+      if (node) {
+        dragRef.current = node;
+        simTemperature = Math.max(simTemperature, 0.12);
+        onSelectEntity(node.entity);
+        needsRedraw.current = true;
+        startLoop();
+      } else {
+        onSelectEntity(null);
+        needsRedraw.current = true;
+        startLoop();
+      }
+    },
+    [coords, nodeAt, onSelectEntity, startLoop],
+  );
+
+  const onMove = useCallback(
+    (ev: React.MouseEvent | React.TouchEvent) => {
+      const c = coords(ev);
+      const node = nodeAt(c.x, c.y);
+      const prev = hoverRef.current;
+      hoverRef.current = node;
+      if (dragRef.current) {
+        dragRef.current.x = c.x;
+        dragRef.current.y = c.y;
+        dragRef.current.vx = 0;
+        dragRef.current.vy = 0;
+      }
+      if (prev?.id !== node?.id || dragRef.current) {
+        needsRedraw.current = true;
+        startLoop();
+      }
+      const canvas = canvasRef.current;
+      if (canvas) canvas.style.cursor = node ? "pointer" : "default";
+    },
+    [coords, nodeAt, startLoop],
+  );
+
+  const onUp = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  if (graph.entities.length === 0) {
     return (
       <div
         ref={containerRef}
         className="flex flex-1 items-center justify-center rounded-lg border border-border bg-card"
       >
         <div className="flex flex-col items-center gap-3 p-8 text-center">
-          <svg
-            width="48"
-            height="48"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            className="text-muted-foreground"
-          >
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
             <circle cx="12" cy="12" r="3" />
             <circle cx="5" cy="5" r="2" />
             <circle cx="19" cy="5" r="2" />
@@ -530,8 +503,8 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
             <line x1="9.5" y1="14.5" x2="6.5" y2="17.5" />
             <line x1="14.5" y1="14.5" x2="17.5" y2="17.5" />
           </svg>
-          <p className="text-muted-foreground text-sm">
-            Upload INFRARUN or passive DNS data to map infrastructure
+          <p className="text-muted-foreground text-sm max-w-xs text-pretty">
+            Upload STIX, MISP/VirusTotal, OpenIOC (AlienVault), passive DNS, or CSV to map the relationship graph
           </p>
         </div>
       </div>
@@ -539,41 +512,63 @@ export function NetworkGraph({ groups, onSelectGroup }: NetworkGraphProps) {
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
-    >
+    <div ref={containerRef} className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
       <canvas
         ref={canvasRef}
-        style={{ width: canvasSize.width, height: canvasSize.height }}
-        onMouseDown={handlePointerDown}
-        onMouseMove={handlePointerMove}
-        onMouseUp={handlePointerUp}
-        onMouseLeave={handlePointerUp}
-        onTouchStart={handlePointerDown}
-        onTouchMove={handlePointerMove}
-        onTouchEnd={handlePointerUp}
+        style={{ width: size.width, height: size.height }}
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        onMouseLeave={onUp}
+        onTouchStart={onDown}
+        onTouchMove={onMove}
+        onTouchEnd={onUp}
         className="touch-none"
       />
-      {/* Legend */}
-      <div className="absolute bottom-3 left-3 flex flex-wrap gap-3 rounded-md border border-border bg-card/90 px-3 py-2 text-xs backdrop-blur-sm">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-primary bg-primary/20" />
-          <span className="text-muted-foreground">ASN / Org</span>
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-primary bg-primary/20" />
-          <span className="text-muted-foreground">IP</span>
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full border-2 border-primary bg-primary/20" />
-          <span className="text-muted-foreground">Domain</span>
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-[#f87171]" />
-          <span className="text-muted-foreground">High Risk</span>
-        </span>
-      </div>
+      <GraphLegend />
     </div>
   );
+}
+
+function GraphLegend() {
+  const shapes: { kind: EntityKind; label: string }[] = [
+    { kind: "domain", label: "Domain" },
+    { kind: "ip", label: "IP" },
+    { kind: "url", label: "URL" },
+    { kind: "hash", label: "Hash" },
+    { kind: "asn", label: "ASN" },
+  ];
+  return (
+    <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-border bg-card/90 px-3 py-2 text-xs backdrop-blur-sm">
+      <span className="flex items-center gap-1.5">
+        <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: MATCH_COLOR }} />
+        <span className="text-foreground font-medium">Match (multi-feed)</span>
+      </span>
+      <span className="text-muted-foreground/50">|</span>
+      {shapes.map((s) => (
+        <span key={s.kind} className="flex items-center gap-1.5 text-muted-foreground">
+          <ShapeIcon kind={s.kind} />
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ShapeIcon({ kind }: { kind: EntityKind }) {
+  const c = "var(--color-muted-foreground)";
+  if (kind === "ip")
+    return <span className="inline-block h-2.5 w-2.5 border" style={{ borderColor: c }} />;
+  if (kind === "hash")
+    return <span className="inline-block h-2.5 w-2.5 rotate-45 border" style={{ borderColor: c }} />;
+  if (kind === "url")
+    return (
+      <span
+        className="inline-block h-0 w-0"
+        style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderBottom: `9px solid ${c}` }}
+      />
+    );
+  if (kind === "asn")
+    return <span className="inline-block h-2.5 w-2.5 border" style={{ borderColor: c, clipPath: "polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%)" }} />;
+  return <span className="inline-block h-2.5 w-2.5 rounded-full border" style={{ borderColor: c }} />;
 }

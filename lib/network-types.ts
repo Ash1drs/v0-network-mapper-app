@@ -59,3 +59,101 @@ export interface GraphEdge {
   target: string;
   color: string;
 }
+
+// ===========================================================================
+// Threat-intel relationship graph model
+// A typed entity + relationship graph that all feeds (STIX, MISP/VT, OpenIOC,
+// passive DNS, CSV) normalize into. Identical indicators across feeds merge
+// into one shared entity; typed edges are preserved.
+// ===========================================================================
+
+export type EntityKind = "domain" | "ip" | "url" | "hash" | "asn";
+
+export type EdgeKind =
+  | "resolves-to"
+  | "sub-domain-of"
+  | "sibling-of"
+  | "communicates-with"
+  | "belongs-to"
+  | "downloaded-from"
+  | "related-to";
+
+export interface Entity {
+  id: string; // canonical key: `${kind}:${value}` (value lowercased)
+  kind: EntityKind;
+  value: string;
+  feeds: string[]; // source feed ids (filenames) that contributed this entity
+  riskScore: number; // 0-100
+  asn?: string;
+  asName?: string;
+  firstSeen?: string;
+  lastSeen?: string;
+  matched?: boolean; // present in more than one feed (computed on merge)
+}
+
+export interface Relationship {
+  id: string; // `${source}|${kind}|${target}`
+  source: string; // entity id
+  target: string; // entity id
+  kind: EdgeKind;
+  feeds: string[];
+  matched?: boolean; // same edge asserted by more than one feed
+}
+
+export interface ThreatGraph {
+  entities: Entity[];
+  relationships: Relationship[];
+}
+
+// ---- Color system for feed vs. match coding ----
+
+// One color means "this entity appears in more than one feed" (a match).
+export const MATCH_COLOR = "#ec4899"; // magenta/pink — reserved for matches
+
+// Distinct per-feed palette (no pink — that's reserved for matches; no purple).
+export const FEED_COLORS = [
+  "#22d3ee", // cyan
+  "#4ade80", // green
+  "#f59e0b", // amber
+  "#38bdf8", // sky
+  "#2dd4bf", // teal
+  "#a3e635", // lime
+  "#fb923c", // orange
+  "#facc15", // yellow
+];
+
+export function feedColor(feedIndex: number): string {
+  return FEED_COLORS[feedIndex % FEED_COLORS.length];
+}
+
+// A node/edge is colored by match state first, then by its single feed.
+export function entityColor(
+  item: { matched?: boolean; feeds: string[] },
+  feedOrder: string[],
+): string {
+  if (item.matched || item.feeds.length > 1) return MATCH_COLOR;
+  const idx = feedOrder.indexOf(item.feeds[0]);
+  return feedColor(idx < 0 ? 0 : idx);
+}
+
+export const ENTITY_KIND_LABEL: Record<EntityKind, string> = {
+  domain: "Domain",
+  ip: "IP",
+  url: "URL",
+  hash: "File hash",
+  asn: "ASN / Org",
+};
+
+export const EDGE_KIND_LABEL: Record<EdgeKind, string> = {
+  "resolves-to": "resolves to",
+  "sub-domain-of": "sub-domain of",
+  "sibling-of": "sibling of",
+  "communicates-with": "communicates with",
+  "belongs-to": "belongs to",
+  "downloaded-from": "downloaded from",
+  "related-to": "related to",
+};
+
+export function entityId(kind: EntityKind, value: string): string {
+  return `${kind}:${value.trim().toLowerCase()}`;
+}

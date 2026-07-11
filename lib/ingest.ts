@@ -1,191 +1,40 @@
-import type { DnsRecord } from "@/lib/network-types";
+import {
+  entityId,
+  type EdgeKind,
+  type Entity,
+  type EntityKind,
+  type Relationship,
+  type ThreatGraph,
+} from "@/lib/network-types";
 
 export interface IngestResult {
-  records: DnsRecord[];
+  graph: ThreatGraph;
   format: string;
+  feed: string;
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Small helpers
 // ---------------------------------------------------------------------------
 
 function normalizeAsn(raw: unknown): string {
   if (raw === null || raw === undefined || raw === "") return "";
   const s = String(raw).trim();
   if (!s) return "";
-  // Already prefixed (AS15169) or bare number (15169) -> normalize to AS#####
   const num = s.replace(/^AS/i, "").trim();
   if (/^\d+$/.test(num)) return `AS${num}`;
   return s;
-}
-
-function makeRecord(partial: Partial<DnsRecord>): DnsRecord {
-  return {
-    query: partial.query ?? "",
-    query_risk_score: partial.query_risk_score ?? 0,
-    query_risk_score_decider: partial.query_risk_score_decider ?? "",
-    query_asn: partial.query_asn ?? "",
-    query_as_name: partial.query_as_name ?? "",
-    answer: partial.answer ?? "",
-    answer_risk_score: partial.answer_risk_score ?? 0,
-    answer_risk_score_decider: partial.answer_risk_score_decider ?? "",
-    answer_asn: partial.answer_asn ?? "",
-    answer_as_name: partial.answer_as_name ?? "",
-    count: partial.count ?? 1,
-    first_seen: partial.first_seen ?? "",
-    last_seen: partial.last_seen ?? "",
-    type: partial.type ?? "A",
-  };
 }
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const IPV6 = /^[0-9a-fA-F:]+:[0-9a-fA-F:]+$/;
 
 function isIp(value: string): boolean {
-  return IPV4.test(value) || IPV6.test(value);
+  return IPV4.test(value.trim()) || IPV6.test(value.trim());
 }
 
-// ---------------------------------------------------------------------------
-// Format: INFRARUN / native passive DNS (already the right shape)
-// ---------------------------------------------------------------------------
-
-function looksNative(row: any): boolean {
-  return (
-    row &&
-    typeof row === "object" &&
-    ("query" in row || "answer" in row) &&
-    ("answer_asn" in row || "answer_as_name" in row || "query_asn" in row)
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Format: STIX 2.x bundle
-// ---------------------------------------------------------------------------
-
-function parseStix(bundle: any): DnsRecord[] {
-  const objects: any[] = bundle.objects || [];
-  const byId = new Map<string, any>();
-  for (const o of objects) if (o?.id) byId.set(o.id, o);
-
-  // Build AS lookup: SCO id -> { asn, name }
-  const asById = new Map<string, { asn: string; name: string }>();
-  for (const o of objects) {
-    if (o.type === "autonomous-system") {
-      asById.set(o.id, {
-        asn: normalizeAsn(o.number),
-        name: o.name || "",
-      });
-    }
-  }
-
-  // belongs-to relationships link an addr SCO to an autonomous-system SCO
-  const addrToAs = new Map<string, { asn: string; name: string }>();
-  for (const o of objects) {
-    if (o.type === "relationship" && o.relationship_type === "belongs-to") {
-      const as = asById.get(o.target_ref);
-      if (as) addrToAs.set(o.source_ref, as);
-    }
-  }
-
-  const records: DnsRecord[] = [];
-
-  // resolves-to relationships: domain-name -> ipv4-addr/ipv6-addr
-  let hadRelationship = false;
-  for (const o of objects) {
-    if (o.type === "relationship" && o.relationship_type === "resolves-to") {
-      const src = byId.get(o.source_ref);
-      const tgt = byId.get(o.target_ref);
-      const domain = src?.value;
-      const ip = tgt?.value;
-      if (domain || ip) {
-        hadRelationship = true;
-        const as = tgt ? addrToAs.get(tgt.id) : undefined;
-        records.push(
-          makeRecord({
-            query: domain || "",
-            answer: ip || "",
-            answer_asn: as?.asn || "",
-            answer_as_name: as?.name || "",
-            first_seen: o.created || "",
-            last_seen: o.modified || "",
-          }),
-        );
-      }
-    }
-  }
-
-  // Extract from indicator patterns: [domain-name:value = 'x'] / [ipv4-addr:value = 'y']
-  for (const o of objects) {
-    if (o.type === "indicator" && typeof o.pattern === "string") {
-      const domains = [...o.pattern.matchAll(/(?:domain-name|hostname)[^']*'([^']+)'/g)].map(
-        (m) => m[1],
-      );
-      const ips = [
-        ...o.pattern.matchAll(/ipv[46]-addr:value\s*=\s*'([^']+)'/g),
-      ].map((m) => m[1]);
-      const score = typeof o.confidence === "number" ? o.confidence : 0;
-      if (domains.length && ips.length) {
-        for (const d of domains)
-          for (const ip of ips)
-            records.push(
-              makeRecord({
-                query: d,
-                answer: ip,
-                answer_risk_score: score,
-                first_seen: o.valid_from || o.created || "",
-                last_seen: o.modified || "",
-              }),
-            );
-      } else if (!hadRelationship) {
-        for (const d of domains)
-          records.push(makeRecord({ query: d, answer_risk_score: score }));
-        for (const ip of ips)
-          records.push(makeRecord({ answer: ip, answer_risk_score: score }));
-      }
-    }
-  }
-
-  // Standalone observable SCOs (observed-data / plain SCOs) with no relationship
-  if (!hadRelationship && records.length === 0) {
-    for (const o of objects) {
-      if (o.type === "domain-name" && o.value) {
-        records.push(makeRecord({ query: o.value }));
-      } else if ((o.type === "ipv4-addr" || o.type === "ipv6-addr") && o.value) {
-        const as = addrToAs.get(o.id);
-        records.push(
-          makeRecord({
-            answer: o.value,
-            answer_asn: as?.asn || "",
-            answer_as_name: as?.name || "",
-          }),
-        );
-      }
-    }
-  }
-
-  return records;
-}
-
-// ---------------------------------------------------------------------------
-// Format: MISP Event (also produced by VirusTotal Graph "export")
-// ---------------------------------------------------------------------------
-
-// A tiny registrable-domain heuristic so we can cluster related hosts
-// (e.g. api.symantke.com + cdn.symantke.com -> "symantke.com") when the feed
-// carries no ASN, which is the case for VT Graph / MISP exports.
-const TWO_LEVEL_TLDS = new Set([
-  "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "co.kr", "co.nz", "co.za",
-  "com.au", "com.br", "com.cn", "com.mx", "com.tr", "com.tw", "net.au",
-]);
-
-function registrableDomain(host: string): string {
-  const h = host.replace(/\.$/, "").toLowerCase();
-  const parts = h.split(".");
-  if (parts.length <= 2) return h;
-  const lastTwo = parts.slice(-2).join(".");
-  const lastThree = parts.slice(-3).join(".");
-  if (TWO_LEVEL_TLDS.has(lastTwo)) return lastThree;
-  return lastTwo;
+function isHash(value: string): boolean {
+  return /^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/.test(value.trim());
 }
 
 function hostFromUrl(value: string): string {
@@ -197,7 +46,7 @@ function hostFromUrl(value: string): string {
   }
 }
 
-// "6/91" -> risk on a 0-100 scale
+// "6/91" -> 0-100 risk
 function detectionRatioToRisk(ratio: string): number {
   const m = String(ratio).match(/(\d+)\s*\/\s*(\d+)/);
   if (!m) return 0;
@@ -207,6 +56,170 @@ function detectionRatioToRisk(ratio: string): number {
   return Math.round((malicious / total) * 100);
 }
 
+function clampRisk(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+// ---------------------------------------------------------------------------
+// Graph builder — accumulates entities + relationships for a single feed
+// ---------------------------------------------------------------------------
+
+class GraphBuilder {
+  private entities = new Map<string, Entity>();
+  private rels = new Map<string, Relationship>();
+  constructor(private feed: string) {}
+
+  addEntity(
+    kind: EntityKind,
+    rawValue: string,
+    extra: Partial<Pick<Entity, "riskScore" | "asn" | "asName" | "firstSeen" | "lastSeen">> = {},
+  ): string | null {
+    const value = (rawValue ?? "").trim();
+    if (!value) return null;
+    const id = entityId(kind, value);
+    const existing = this.entities.get(id);
+    if (existing) {
+      if (extra.riskScore) existing.riskScore = Math.max(existing.riskScore, clampRisk(extra.riskScore));
+      if (extra.asn && !existing.asn) existing.asn = extra.asn;
+      if (extra.asName && !existing.asName) existing.asName = extra.asName;
+      if (extra.firstSeen && !existing.firstSeen) existing.firstSeen = extra.firstSeen;
+      if (extra.lastSeen && !existing.lastSeen) existing.lastSeen = extra.lastSeen;
+      return id;
+    }
+    this.entities.set(id, {
+      id,
+      kind,
+      value,
+      feeds: [this.feed],
+      riskScore: clampRisk(extra.riskScore ?? 0),
+      asn: extra.asn,
+      asName: extra.asName,
+      firstSeen: extra.firstSeen,
+      lastSeen: extra.lastSeen,
+    });
+    return id;
+  }
+
+  addRel(sourceId: string | null, kind: EdgeKind, targetId: string | null) {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const id = `${sourceId}|${kind}|${targetId}`;
+    if (this.rels.has(id)) return;
+    this.rels.set(id, { id, source: sourceId, target: targetId, kind, feeds: [this.feed] });
+  }
+
+  // Convenience: a domain that resolves to an IP, optionally within an ASN.
+  addResolution(domain: string, ip: string, opts: { risk?: number; asn?: string; asName?: string; firstSeen?: string; lastSeen?: string } = {}) {
+    const d = domain ? this.addEntity("domain", domain, { riskScore: opts.risk, firstSeen: opts.firstSeen, lastSeen: opts.lastSeen }) : null;
+    const i = ip ? this.addEntity("ip", ip, { asn: opts.asn, asName: opts.asName, firstSeen: opts.firstSeen, lastSeen: opts.lastSeen }) : null;
+    if (d && i) this.addRel(d, "resolves-to", i);
+    if (i && opts.asn) {
+      const a = this.addEntity("asn", opts.asn, { asName: opts.asName });
+      this.addRel(i, "belongs-to", a);
+    }
+    return { d, i };
+  }
+
+  build(): ThreatGraph {
+    return {
+      entities: Array.from(this.entities.values()),
+      relationships: Array.from(this.rels.values()),
+    };
+  }
+
+  get size() {
+    return this.entities.size;
+  }
+}
+
+// Map a source feed's relationship label onto our edge vocabulary.
+function mapEdgeKind(raw: string): EdgeKind {
+  const r = raw.toLowerCase().replace(/_/g, "-");
+  if (r.includes("resolve")) return "resolves-to";
+  if (r.includes("subdomain") || r.includes("sub-domain")) return "sub-domain-of";
+  if (r.includes("sibling")) return "sibling-of";
+  if (r.includes("communicat") || r.includes("contact") || r.includes("connect")) return "communicates-with";
+  if (r.includes("belong")) return "belongs-to";
+  if (r.includes("download") || r.includes("drop")) return "downloaded-from";
+  return "related-to";
+}
+
+// ---------------------------------------------------------------------------
+// Format: STIX 2.x bundle
+// ---------------------------------------------------------------------------
+
+function scoKind(type: string): EntityKind | null {
+  if (type === "domain-name") return "domain";
+  if (type === "ipv4-addr" || type === "ipv6-addr") return "ip";
+  if (type === "url") return "url";
+  if (type === "file") return "hash";
+  if (type === "autonomous-system") return "asn";
+  return null;
+}
+
+function scoValue(o: any): string {
+  if (o.type === "file") {
+    const h = o.hashes || {};
+    return h["SHA-256"] || h["SHA-1"] || h["MD5"] || h.sha256 || h.sha1 || h.md5 || "";
+  }
+  if (o.type === "autonomous-system") return normalizeAsn(o.number);
+  return o.value || "";
+}
+
+function parseStixGraph(bundle: any, feed: string): ThreatGraph {
+  const gb = new GraphBuilder(feed);
+  const objects: any[] = bundle.objects || [];
+  const byId = new Map<string, any>();
+  for (const o of objects) if (o?.id) byId.set(o.id, o);
+
+  // Register SCO entities and remember their entity id by SCO id.
+  const entIdBySco = new Map<string, string>();
+  for (const o of objects) {
+    const kind = scoKind(o.type);
+    if (!kind) continue;
+    const value = scoValue(o);
+    if (!value) continue;
+    const id = gb.addEntity(kind, value, {
+      asName: o.type === "autonomous-system" ? o.name : undefined,
+    });
+    if (id) entIdBySco.set(o.id, id);
+  }
+
+  // Relationships between SCOs.
+  for (const o of objects) {
+    if (o.type !== "relationship") continue;
+    const src = entIdBySco.get(o.source_ref);
+    const tgt = entIdBySco.get(o.target_ref);
+    if (!src || !tgt) continue;
+    gb.addRel(src, mapEdgeKind(o.relationship_type || "related-to"), tgt);
+  }
+
+  // Indicator patterns: extract indicators and relate co-occurring ones.
+  for (const o of objects) {
+    if (o.type !== "indicator" || typeof o.pattern !== "string") continue;
+    const score = typeof o.confidence === "number" ? o.confidence : 0;
+    const found: string[] = [];
+    for (const m of o.pattern.matchAll(/(?:domain-name|hostname)[^']*'([^']+)'/g))
+      found.push(gb.addEntity("domain", m[1], { riskScore: score }) || "");
+    for (const m of o.pattern.matchAll(/ipv[46]-addr:value\s*=\s*'([^']+)'/g))
+      found.push(gb.addEntity("ip", m[1], { riskScore: score }) || "");
+    for (const m of o.pattern.matchAll(/url:value\s*=\s*'([^']+)'/g))
+      found.push(gb.addEntity("url", m[1], { riskScore: score }) || "");
+    for (const m of o.pattern.matchAll(/file:hashes\.[^=]*=\s*'([^']+)'/g))
+      found.push(gb.addEntity("hash", m[1], { riskScore: score }) || "");
+    const real = found.filter(Boolean);
+    // Co-occurring indicators in one pattern are related.
+    for (let a = 0; a < real.length; a++)
+      for (let b = a + 1; b < real.length; b++) gb.addRel(real[a], "related-to", real[b]);
+  }
+
+  return gb.build();
+}
+
+// ---------------------------------------------------------------------------
+// Format: MISP Event (also produced by VirusTotal Graph "export")
+// ---------------------------------------------------------------------------
+
 interface MispObject {
   uuid: string;
   name: string;
@@ -214,11 +227,10 @@ interface MispObject {
   ObjectReference?: any[];
 }
 
-function parseMisp(event: any): DnsRecord[] {
+function parseMispGraph(event: any, feed: string): ThreatGraph {
+  const gb = new GraphBuilder(feed);
   const attributes: any[] = event.Attribute || [];
   const objects: MispObject[] = event.Object || [];
-
-  // ---- object attribute lookup helpers ----
   const objById = new Map<string, MispObject>();
   for (const o of objects) if (o.uuid) objById.set(o.uuid, o);
 
@@ -231,249 +243,200 @@ function parseMisp(event: any): DnsRecord[] {
     return "";
   };
 
-  // Primary indicator value for an object (domain / ip / url)
-  const objIndicator = (o: MispObject | undefined): { domain?: string; ip?: string; url?: string } => {
-    if (!o) return {};
-    const domain = attrVal(o, "domain", "hostname");
-    const ip = attrVal(o, "ip", "ip-dst", "ip-src", "ip-addr");
-    const url = attrVal(o, "url");
-    return { domain: domain || undefined, ip: ip || undefined, url: url || undefined };
-  };
-
-  // ---- detection ratio (behavior/reputation) via analysed-with -> report ----
+  // Detection ratio -> risk, resolved via analysed-with -> report object.
   const riskByObject = new Map<string, number>();
   for (const o of objects) {
     for (const ref of o.ObjectReference || []) {
-      if (ref.relationship_type === "analysed-with") {
+      if (mapEdgeKind(ref.relationship_type || "") === "related-to" && /analys|report/i.test(ref.relationship_type || "")) {
         const report = objById.get(ref.referenced_uuid);
         const ratio = attrVal(report, "detection-ratio");
         if (ratio) riskByObject.set(o.uuid, detectionRatioToRisk(ratio));
       }
     }
+    // Some exports inline the ratio on the object itself.
+    const inlineRatio = attrVal(o, "detection-ratio");
+    if (inlineRatio) riskByObject.set(o.uuid, detectionRatioToRisk(inlineRatio));
   }
 
-  const records: DnsRecord[] = [];
-  const resolvedDomains = new Set<string>();
-  const resolvedIps = new Set<string>();
-
-  // ---- resolves-to relationships: domain <-> ip pairs ----
-  for (const o of objects) {
-    const srcInd = objIndicator(o);
-    for (const ref of o.ObjectReference || []) {
-      if (ref.relationship_type !== "resolves-to") continue;
-      const tgt = objById.get(ref.referenced_uuid);
-      const tgtInd = objIndicator(tgt);
-      const domain = srcInd.domain || tgtInd.domain || "";
-      const ip = srcInd.ip || tgtInd.ip || "";
-      if (!domain && !ip) continue;
-      const fam = domain ? registrableDomain(domain) : "";
-      records.push(
-        makeRecord({
-          query: domain,
-          answer: ip,
-          query_risk_score: riskByObject.get(o.uuid) || 0,
-          answer_risk_score: (tgt && riskByObject.get(tgt.uuid)) || 0,
-          query_asn: fam,
-          query_as_name: fam,
-          answer_asn: fam,
-          answer_as_name: fam,
-          type: "A",
-        }),
-      );
-      if (domain) resolvedDomains.add(domain);
-      if (ip) resolvedIps.add(ip);
-    }
-  }
-
-  // ---- standalone indicators (domains/ips/urls not already paired) ----
-  const seenDomain = new Set(resolvedDomains);
-  const seenIp = new Set(resolvedIps);
-
-  const addDomain = (domain: string, risk: number) => {
-    if (!domain || seenDomain.has(domain)) return;
-    // A URL/host field can actually contain an IP -> treat it as an IP.
-    if (isIp(domain)) {
-      addIp(domain, risk);
-      return;
-    }
-    seenDomain.add(domain);
-    const fam = registrableDomain(domain);
-    records.push(
-      makeRecord({ query: domain, query_risk_score: risk, query_asn: fam, query_as_name: fam }),
-    );
-  };
-  const addIp = (ip: string, risk: number) => {
-    if (!ip || seenIp.has(ip)) return;
-    seenIp.add(ip);
-    records.push(makeRecord({ answer: ip, answer_risk_score: risk }));
-  };
-
-  // From objects (domain-ip / url objects)
+  // Primary entity per object (domain preferred, then ip, url, hash).
+  const primaryByObject = new Map<string, string>();
   for (const o of objects) {
     if (o.name === "virustotal-report" || o.name === "virustotal-graph") continue;
-    const { domain, ip, url } = objIndicator(o);
     const risk = riskByObject.get(o.uuid) || 0;
-    if (domain) addDomain(domain, risk);
-    if (ip) addIp(ip, risk);
-    if (url) addDomain(hostFromUrl(url), risk);
+    const domain = attrVal(o, "domain", "hostname");
+    const ip = attrVal(o, "ip", "ip-dst", "ip-src", "ip-addr");
+    const url = attrVal(o, "url");
+    const hash = attrVal(o, "sha256", "sha1", "md5", "hash");
+
+    let primary: string | null = null;
+    let ipId: string | null = null;
+    if (ip) ipId = gb.addEntity("ip", ip, { riskScore: risk });
+    if (domain) primary = gb.addEntity("domain", domain, { riskScore: risk });
+    if (!primary && url) primary = gb.addEntity("url", url, { riskScore: risk });
+    if (!primary && hash) primary = gb.addEntity("hash", hash, { riskScore: risk });
+    if (!primary && ipId) primary = ipId;
+
+    // domain-ip object encodes a resolution.
+    if (primary && ipId && primary !== ipId) gb.addRel(primary, "resolves-to", ipId);
+    if (primary) primaryByObject.set(o.uuid, primary);
   }
 
-  // From flat event-level attributes
+  // Typed relationships between objects.
+  for (const o of objects) {
+    const src = primaryByObject.get(o.uuid);
+    if (!src) continue;
+    for (const ref of o.ObjectReference || []) {
+      const tgt = primaryByObject.get(ref.referenced_uuid);
+      if (!tgt) continue;
+      gb.addRel(src, mapEdgeKind(ref.relationship_type || "related-to"), tgt);
+    }
+  }
+
+  // Flat event-level attributes (standalone indicators).
   for (const a of attributes) {
     const type = String(a.type || "").toLowerCase();
     const value = String(a.value ?? "");
     if (!value) continue;
-    if (type.includes("ip")) addIp(value, 0);
-    else if (type === "domain" || type === "hostname") addDomain(value, 0);
-    else if (type === "url") addDomain(hostFromUrl(value), 0);
+    if (type.includes("ip") || isIp(value)) gb.addEntity("ip", value);
+    else if (type.includes("md5") || type.includes("sha") || isHash(value)) gb.addEntity("hash", value);
+    else if (type === "url" || type.includes("uri")) gb.addEntity("url", value);
+    else if (type === "domain" || type === "hostname") gb.addEntity("domain", value);
   }
 
-  return records;
+  return gb.build();
 }
 
 // ---------------------------------------------------------------------------
-// Format: AlienVault OTX
+// Format: OpenIOC 1.1 XML (AlienVault OTX export)
 // ---------------------------------------------------------------------------
 
-function parseOtxPassiveDns(rows: any[]): DnsRecord[] {
-  return rows.map((r) =>
-    makeRecord({
-      query: r.hostname || r.domain || "",
-      answer: r.address || r.ip || "",
-      answer_asn: normalizeAsn(r.asn),
-      answer_as_name: r.asn_name || r.as_name || r.name || "",
-      first_seen: r.first || r.first_seen || "",
-      last_seen: r.last || r.last_seen || "",
-      type: r.record_type || r.type || "A",
-    }),
-  );
+function openIocKind(search: string): EntityKind | null {
+  const s = search.toLowerCase();
+  if (s.includes("md5") || s.includes("sha1") || s.includes("sha256") || s.includes("sha-")) return "hash";
+  if (s.includes("uri") || s.includes("url")) return "url";
+  if (s.includes("ip")) return "ip";
+  if (s.includes("dns") || s.includes("host") || s.includes("domain")) return "domain";
+  return null;
 }
 
-function parseOtxPulse(indicators: any[]): DnsRecord[] {
-  const records: DnsRecord[] = [];
+function parseOpenIoc(text: string, feed: string): ThreatGraph {
+  const gb = new GraphBuilder(feed);
+  // Each IndicatorItem carries a <Context search="..."/> and a <Content>value</Content>.
+  const itemRe = /<IndicatorItem\b[\s\S]*?<\/IndicatorItem>/g;
+  const searchRe = /<Context\b[^>]*\bsearch="([^"]+)"/i;
+  const contentRe = /<Content\b[^>]*>([\s\S]*?)<\/Content>/i;
+  for (const block of text.match(itemRe) || []) {
+    const search = block.match(searchRe)?.[1];
+    const rawContent = block.match(contentRe)?.[1];
+    if (!search || rawContent == null) continue;
+    const value = rawContent.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+    if (!value) continue;
+    let kind = openIocKind(search);
+    // Fall back to shape detection when the search field is ambiguous.
+    if (!kind) {
+      if (isIp(value)) kind = "ip";
+      else if (isHash(value)) kind = "hash";
+      else if (/^[a-z]+:\/\//i.test(value)) kind = "url";
+      else if (/\./.test(value)) kind = "domain";
+    }
+    if (kind) gb.addEntity(kind, kind === "url" ? value : value.toLowerCase());
+  }
+  return gb.build();
+}
+
+// ---------------------------------------------------------------------------
+// Simpler feeds: OTX JSON, VirusTotal v3, passive DNS, generic JSON, CSV
+// (These produce flat rows that we convert into resolution edges.)
+// ---------------------------------------------------------------------------
+
+function parseOtxPassiveDns(rows: any[], gb: GraphBuilder) {
+  for (const r of rows) {
+    gb.addResolution(r.hostname || r.domain || "", r.address || r.ip || "", {
+      asn: normalizeAsn(r.asn),
+      asName: r.asn_name || r.as_name || r.name || "",
+      firstSeen: r.first || r.first_seen || "",
+      lastSeen: r.last || r.last_seen || "",
+    });
+  }
+}
+
+function parseOtxPulse(indicators: any[], gb: GraphBuilder) {
   for (const ind of indicators) {
     const value = ind.indicator || ind.value;
     if (!value) continue;
     const type = String(ind.type || "").toLowerCase();
-    if (type.includes("ip") || isIp(value)) {
-      records.push(
-        makeRecord({
-          answer: value,
-          answer_asn: normalizeAsn(ind.asn),
-          first_seen: ind.created || "",
-        }),
-      );
-    } else if (type.includes("domain") || type.includes("hostname") || type.includes("url")) {
-      let host = value;
-      try {
-        if (type.includes("url")) host = new URL(value).hostname;
-      } catch {
-        /* keep raw */
-      }
-      records.push(makeRecord({ query: host, first_seen: ind.created || "" }));
-    }
+    if (type.includes("ip") || isIp(value)) gb.addEntity("ip", value, { asn: normalizeAsn(ind.asn) });
+    else if (type.includes("hash") || type.includes("md5") || type.includes("sha") || isHash(value)) gb.addEntity("hash", value);
+    else if (type.includes("url")) gb.addEntity("url", value);
+    else if (type.includes("domain") || type.includes("hostname")) gb.addEntity("domain", value);
   }
-  return records;
 }
 
-// ---------------------------------------------------------------------------
-// Format: VirusTotal v3
-// ---------------------------------------------------------------------------
-
-function parseVirusTotal(body: any): DnsRecord[] {
-  const records: DnsRecord[] = [];
+function parseVirusTotalV3(body: any, gb: GraphBuilder) {
   const items = Array.isArray(body.data) ? body.data : [body.data];
-
   for (const item of items) {
     if (!item) continue;
     const attrs = item.attributes || {};
-
-    // Resolution objects: host_name + ip_address
+    const risk = clampRisk(attrs.last_analysis_stats?.malicious ?? 0);
     if (attrs.host_name || attrs.ip_address) {
-      records.push(
-        makeRecord({
-          query: attrs.host_name || "",
-          answer: attrs.ip_address || "",
-          answer_asn: normalizeAsn(attrs.asn),
-          answer_as_name: attrs.as_owner || "",
-          answer_risk_score: attrs.last_analysis_stats?.malicious ?? 0,
-          first_seen: attrs.date ? String(attrs.date) : "",
-        }),
-      );
-      continue;
-    }
-
-    // IP address object
-    if (item.type === "ip_address" || (item.id && isIp(item.id))) {
-      records.push(
-        makeRecord({
-          answer: item.id || "",
-          answer_asn: normalizeAsn(attrs.asn),
-          answer_as_name: attrs.as_owner || "",
-          answer_risk_score: attrs.last_analysis_stats?.malicious ?? 0,
-        }),
-      );
-      continue;
-    }
-
-    // Domain object
-    if (item.type === "domain" || item.id) {
-      records.push(
-        makeRecord({
-          query: item.id || "",
-          answer_risk_score: attrs.last_analysis_stats?.malicious ?? 0,
-        }),
-      );
+      gb.addResolution(attrs.host_name || "", attrs.ip_address || "", {
+        risk,
+        asn: normalizeAsn(attrs.asn),
+        asName: attrs.as_owner || "",
+        firstSeen: attrs.date ? String(attrs.date) : "",
+      });
+    } else if (item.type === "ip_address" || (item.id && isIp(item.id))) {
+      gb.addEntity("ip", item.id || "", { riskScore: risk, asn: normalizeAsn(attrs.asn), asName: attrs.as_owner || "" });
+    } else if (item.type === "domain" || item.id) {
+      gb.addEntity("domain", item.id || "", { riskScore: risk });
     }
   }
-  return records;
 }
-
-// ---------------------------------------------------------------------------
-// Format: generic JSON array of objects (fuzzy field mapping)
-// ---------------------------------------------------------------------------
 
 const DOMAIN_KEYS = ["query", "domain", "hostname", "host", "fqdn", "name"];
 const IP_KEYS = ["answer", "ip", "ip_address", "address", "resolved_ip", "a"];
-const ASN_KEYS = ["answer_asn", "asn", "as", "as_number"];
+const ASN_KEYS = ["answer_asn", "asn", "as", "as_number", "query_asn"];
 const ASNAME_KEYS = ["answer_as_name", "as_name", "as_owner", "asn_name", "org", "organization"];
+const HASH_KEYS = ["hash", "md5", "sha1", "sha256", "sha-256"];
+const URL_KEYS = ["url", "uri"];
 
 function pick(row: any, keys: string[]): any {
-  for (const k of Object.keys(row)) {
-    if (keys.includes(k.toLowerCase())) return row[k];
-  }
+  for (const k of Object.keys(row)) if (keys.includes(k.toLowerCase())) return row[k];
   return undefined;
 }
 
-function parseGeneric(rows: any[]): DnsRecord[] {
-  const records: DnsRecord[] = [];
+function looksNative(row: any): boolean {
+  return (
+    row &&
+    typeof row === "object" &&
+    ("query" in row || "answer" in row) &&
+    ("answer_asn" in row || "answer_as_name" in row || "query_asn" in row)
+  );
+}
+
+function parseGenericRows(rows: any[], gb: GraphBuilder) {
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const domain = pick(row, DOMAIN_KEYS);
     const ip = pick(row, IP_KEYS);
-    if (!domain && !ip) continue;
-    records.push(
-      makeRecord({
-        query: domain ? String(domain) : "",
-        answer: ip ? String(ip) : "",
-        answer_asn: normalizeAsn(pick(row, ASN_KEYS)),
-        answer_as_name: pick(row, ASNAME_KEYS) ? String(pick(row, ASNAME_KEYS)) : "",
-      }),
-    );
+    const hash = pick(row, HASH_KEYS);
+    const url = pick(row, URL_KEYS);
+    const asn = normalizeAsn(pick(row, ASN_KEYS));
+    const asName = pick(row, ASNAME_KEYS) ? String(pick(row, ASNAME_KEYS)) : "";
+    const risk = clampRisk(Number(pick(row, ["answer_risk_score", "query_risk_score", "risk", "score"])) || 0);
+    if (domain || ip) {
+      gb.addResolution(domain ? String(domain) : "", ip ? String(ip) : "", { asn, asName, risk });
+    }
+    if (hash) gb.addEntity("hash", String(hash));
+    if (url) gb.addEntity("url", String(url));
   }
-  return records;
 }
 
-// ---------------------------------------------------------------------------
-// Format: CSV
-// ---------------------------------------------------------------------------
-
-function parseCsv(text: string): DnsRecord[] {
+function parseCsv(text: string, gb: GraphBuilder) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return [];
+  if (lines.length < 2) return;
   const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const split = (line: string) =>
-    line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, ""));
+  const split = (line: string) => line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, ""));
   const headers = split(lines[0]).map((h) => h.toLowerCase());
   const rows: any[] = [];
   for (let i = 1; i < lines.length; i++) {
@@ -482,7 +445,7 @@ function parseCsv(text: string): DnsRecord[] {
     headers.forEach((h, idx) => (row[h] = cells[idx] ?? ""));
     rows.push(row);
   }
-  return parseGeneric(rows);
+  parseGenericRows(rows, gb);
 }
 
 // ---------------------------------------------------------------------------
@@ -490,14 +453,20 @@ function parseCsv(text: string): DnsRecord[] {
 // ---------------------------------------------------------------------------
 
 export function ingest(text: string, filename = ""): IngestResult {
+  const feed = filename || "upload";
   const trimmed = text.trim();
 
-  // Attempt JSON first
+  // XML? -> OpenIOC (AlienVault OTX)
+  if (/^<\?xml|<(?:ioc|OpenIOC)\b/i.test(trimmed) || (trimmed.startsWith("<") && /<IndicatorItem\b/.test(trimmed))) {
+    const graph = parseOpenIoc(trimmed, feed);
+    return { graph, format: "OpenIOC (AlienVault OTX)", feed };
+  }
+
+  // JSON (or JSON embedded in extracted text)
   let json: any = null;
   try {
     json = JSON.parse(trimmed);
   } catch {
-    // Try to recover a JSON array embedded in text (e.g. PDF extraction)
     const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
     if (arrayMatch) {
       try {
@@ -509,8 +478,7 @@ export function ingest(text: string, filename = ""): IngestResult {
   }
 
   if (json !== null && typeof json === "object") {
-    // MISP Event (also what VirusTotal Graph exports). Either { Event: {...} }
-    // or a bare event object with an Attribute/Object array.
+    // MISP Event / VirusTotal Graph export
     const mispEvent =
       json.Event && typeof json.Event === "object"
         ? json.Event
@@ -518,36 +486,42 @@ export function ingest(text: string, filename = ""): IngestResult {
         ? json
         : null;
     if (mispEvent && (Array.isArray(mispEvent.Attribute) || Array.isArray(mispEvent.Object))) {
-      const isVtGraph = (mispEvent.Object || []).some(
+      const isVt = (mispEvent.Object || []).some(
         (o: any) => o?.name === "virustotal-graph" || o?.name === "virustotal-report",
       );
       return {
-        records: parseMisp(mispEvent),
-        format: isVtGraph ? "VirusTotal Graph (MISP)" : "MISP Event",
+        graph: parseMispGraph(mispEvent, feed),
+        format: isVt ? "VirusTotal Graph (MISP)" : "MISP Event",
+        feed,
       };
     }
 
-    // STIX bundle
+    // STIX 2.x bundle
     if (json.type === "bundle" && Array.isArray(json.objects)) {
-      return { records: parseStix(json), format: "STIX 2.x" };
+      return { graph: parseStixGraph(json, feed), format: "STIX 2.x", feed };
     }
+
+    const gb = new GraphBuilder(feed);
+
     // OTX passive DNS
     if (Array.isArray(json.passive_dns)) {
-      return { records: parseOtxPassiveDns(json.passive_dns), format: "AlienVault OTX (passive DNS)" };
+      parseOtxPassiveDns(json.passive_dns, gb);
+      return { graph: gb.build(), format: "AlienVault OTX (passive DNS)", feed };
     }
     // OTX pulse
     const pulseIndicators =
       (json.pulse_info?.pulses?.[0]?.indicators as any[]) ||
-      (Array.isArray(json.indicators) &&
-      json.indicators.some((i: any) => i && (i.indicator || i.type))
+      (Array.isArray(json.indicators) && json.indicators.some((i: any) => i && (i.indicator || i.type))
         ? json.indicators
         : null);
     if (pulseIndicators) {
-      return { records: parseOtxPulse(pulseIndicators), format: "AlienVault OTX (pulse)" };
+      parseOtxPulse(pulseIndicators, gb);
+      return { graph: gb.build(), format: "AlienVault OTX (pulse)", feed };
     }
-    // VirusTotal v3 (has data with attributes / meta)
+    // VirusTotal v3
     if (json.data && (json.meta || (Array.isArray(json.data) ? json.data[0]?.attributes : json.data.attributes))) {
-      return { records: parseVirusTotal(json), format: "VirusTotal" };
+      parseVirusTotalV3(json, gb);
+      return { graph: gb.build(), format: "VirusTotal", feed };
     }
 
     // Array-ish payloads
@@ -556,16 +530,13 @@ export function ingest(text: string, filename = ""): IngestResult {
     else if (Array.isArray(json.records)) rows = json.records;
     else if (Array.isArray(json.data)) rows = json.data;
     else if (Array.isArray(json.results)) rows = json.results;
-
     if (rows) {
-      if (rows.some(looksNative)) {
-        return { records: rows.filter(looksNative).map(makeRecord), format: "Passive DNS (native)" };
-      }
-      return { records: parseGeneric(rows), format: "Generic JSON" };
+      parseGenericRows(rows, gb);
+      return { graph: gb.build(), format: rows.some(looksNative) ? "Passive DNS" : "Generic JSON", feed };
     }
   }
 
-  // JSONL (one JSON object per line)
+  // JSONL
   const jsonlLines = trimmed.split("\n").filter((l) => l.trim().startsWith("{"));
   if (jsonlLines.length) {
     const rows: any[] = [];
@@ -577,18 +548,56 @@ export function ingest(text: string, filename = ""): IngestResult {
       }
     }
     if (rows.length) {
-      if (rows.some(looksNative)) {
-        return { records: rows.filter(looksNative).map(makeRecord), format: "Passive DNS (JSONL)" };
-      }
-      return { records: parseGeneric(rows), format: "Generic JSONL" };
+      const gb = new GraphBuilder(feed);
+      parseGenericRows(rows, gb);
+      return { graph: gb.build(), format: "Generic JSONL", feed };
     }
   }
 
-  // CSV / TSV fallback
+  // CSV / TSV
   if (/,|\t/.test(trimmed) && trimmed.includes("\n")) {
-    const records = parseCsv(trimmed);
-    if (records.length) return { records, format: "CSV" };
+    const gb = new GraphBuilder(feed);
+    parseCsv(trimmed, gb);
+    if (gb.size) return { graph: gb.build(), format: "CSV", feed };
   }
 
-  return { records: [], format: "unknown" };
+  return { graph: { entities: [], relationships: [] }, format: "unknown", feed };
+}
+
+// ---------------------------------------------------------------------------
+// Merge multiple feed graphs into one, computing cross-feed matches.
+// ---------------------------------------------------------------------------
+
+export function mergeGraphs(graphs: ThreatGraph[]): ThreatGraph {
+  const entities = new Map<string, Entity>();
+  const rels = new Map<string, Relationship>();
+
+  for (const g of graphs) {
+    for (const e of g.entities) {
+      const existing = entities.get(e.id);
+      if (!existing) {
+        entities.set(e.id, { ...e, feeds: [...e.feeds] });
+        continue;
+      }
+      existing.riskScore = Math.max(existing.riskScore, e.riskScore);
+      existing.asn = existing.asn || e.asn;
+      existing.asName = existing.asName || e.asName;
+      existing.firstSeen = existing.firstSeen || e.firstSeen;
+      existing.lastSeen = existing.lastSeen || e.lastSeen;
+      for (const f of e.feeds) if (!existing.feeds.includes(f)) existing.feeds.push(f);
+    }
+    for (const r of g.relationships) {
+      const existing = rels.get(r.id);
+      if (!existing) {
+        rels.set(r.id, { ...r, feeds: [...r.feeds] });
+        continue;
+      }
+      for (const f of r.feeds) if (!existing.feeds.includes(f)) existing.feeds.push(f);
+    }
+  }
+
+  for (const e of entities.values()) e.matched = e.feeds.length > 1;
+  for (const r of rels.values()) r.matched = r.feeds.length > 1;
+
+  return { entities: Array.from(entities.values()), relationships: Array.from(rels.values()) };
 }
