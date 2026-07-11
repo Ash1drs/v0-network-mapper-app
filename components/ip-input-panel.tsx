@@ -12,63 +12,19 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { DnsRecord } from "@/lib/network-types";
+import { ingest } from "@/lib/ingest";
 
 interface UploadedFile {
   name: string;
   recordCount: number;
   records: DnsRecord[];
+  format: string;
 }
 
 interface UploadPanelProps {
   onAnalyze: (records: DnsRecord[]) => void;
   isLoading: boolean;
   stats: { totalRecords: number; uniqueIps: number; uniqueDomains: number; uniqueAsns: number } | null;
-}
-
-function tryParseRecords(text: string): DnsRecord[] {
-  // Try direct JSON array
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed.records && Array.isArray(parsed.records)) return parsed.records;
-    if (parsed.data && Array.isArray(parsed.data)) return parsed.data;
-  } catch {
-    // Not valid JSON as-is
-  }
-
-  // Try to find a JSON array embedded in text (e.g. from a PDF extraction)
-  const arrayMatch = text.match(/\[[\s\S]*\]/);
-  if (arrayMatch) {
-    try {
-      // Clean up common PDF artifacts: line breaks inside strings, stray hyphens
-      let cleaned = arrayMatch[0];
-      // Fix line breaks inside JSON string values
-      cleaned = cleaned.replace(/-\n/g, "");
-      cleaned = cleaned.replace(/\n/g, " ");
-      // Fix split words with spaces (e.g. "q u e r y" => "query")
-      cleaned = cleaned.replace(/" q u e r y/g, '"query');
-      const parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // Still not parseable
-    }
-  }
-
-  // Try line-by-line JSON (JSONL)
-  const lines = text.split("\n").filter((l) => l.trim().startsWith("{"));
-  if (lines.length > 0) {
-    const records: DnsRecord[] = [];
-    for (const line of lines) {
-      try {
-        records.push(JSON.parse(line.replace(/,$/, "")));
-      } catch {
-        // skip bad lines
-      }
-    }
-    if (records.length > 0) return records;
-  }
-
-  return [];
 }
 
 export function UploadPanel({
@@ -88,15 +44,15 @@ export function UploadPanel({
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      const records = tryParseRecords(text);
+      const { records, format } = ingest(text, file.name);
       if (records.length > 0) {
         setFiles((prev) => [
           ...prev,
-          { name: file.name, recordCount: records.length, records },
+          { name: file.name, recordCount: records.length, records, format },
         ]);
       } else {
         setParseError(
-          `Could not find DNS records in "${file.name}". Expected JSON with query/answer fields.`
+          `Couldn't extract any indicators from "${file.name}". Supported: STIX 2.x bundles, AlienVault OTX (pulse & passive DNS), VirusTotal v3, passive-DNS JSON/JSONL, and CSV.`
         );
       }
     };
@@ -173,8 +129,8 @@ export function UploadPanel({
           Drop files here or{" "}
           <span className="font-medium text-primary">browse</span>
         </span>
-        <span className="text-xs text-muted-foreground/70">
-          INFRARUN JSON, passive DNS exports, threat intel feeds
+        <span className="text-xs text-muted-foreground/70 text-center px-2">
+          STIX, OTX, VirusTotal, passive DNS &middot; JSON / JSONL / CSV
         </span>
       </button>
 
@@ -209,8 +165,8 @@ export function UploadPanel({
                   {file.name}
                 </span>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {file.recordCount.toLocaleString()} DNS record
-                  {file.recordCount !== 1 ? "s" : ""}
+                  {file.format} &middot; {file.recordCount.toLocaleString()}{" "}
+                  indicator{file.recordCount !== 1 ? "s" : ""}
                 </span>
               </div>
               <button

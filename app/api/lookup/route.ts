@@ -25,14 +25,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate we actually have the right shape
-    const valid = records.filter(
-      (r) => r.query && r.answer && r.answer_asn !== undefined
-    );
+    // A record is usable if it carries at least a domain or an IP indicator
+    const valid = records.filter((r) => r.query || r.answer);
 
     if (valid.length === 0) {
       return NextResponse.json(
-        { error: "No valid DNS records found. Each record needs at least query, answer, and answer_asn fields." },
+        { error: "No usable indicators found. Each record needs at least a domain (query) or an IP (answer)." },
         { status: 400 }
       );
     }
@@ -41,10 +39,10 @@ export async function POST(request: NextRequest) {
     const asnMap = new Map<string, { asName: string; ips: Set<string>; domains: Set<string>; records: DnsRecord[]; riskScores: number[]; totalCount: number }>();
 
     for (const r of valid) {
-      const key = r.answer_asn || "unknown";
+      const key = r.answer_asn || r.query_asn || "unknown";
       if (!asnMap.has(key)) {
         asnMap.set(key, {
-          asName: r.answer_as_name || "Unknown",
+          asName: r.answer_as_name || r.query_as_name || "Unknown",
           ips: new Set(),
           domains: new Set(),
           records: [],
@@ -53,11 +51,11 @@ export async function POST(request: NextRequest) {
         });
       }
       const group = asnMap.get(key)!;
-      group.ips.add(r.answer);
-      group.domains.add(r.query);
+      if (r.answer) group.ips.add(r.answer);
+      if (r.query) group.domains.add(r.query);
       group.records.push(r);
-      group.riskScores.push(r.answer_risk_score);
-      group.totalCount += r.count;
+      group.riskScores.push(r.answer_risk_score || r.query_risk_score || 0);
+      group.totalCount += r.count || 1;
     }
 
     let colorIndex = 0;
@@ -78,8 +76,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       groups,
       totalRecords: valid.length,
-      uniqueIps: new Set(valid.map((r) => r.answer)).size,
-      uniqueDomains: new Set(valid.map((r) => r.query)).size,
+      uniqueIps: new Set(valid.map((r) => r.answer).filter(Boolean)).size,
+      uniqueDomains: new Set(valid.map((r) => r.query).filter(Boolean)).size,
       uniqueAsns: asnMap.size,
     });
   } catch (error) {
