@@ -6,6 +6,8 @@ import {
   type Relationship,
   type ThreatGraph,
 } from "@/lib/network-types";
+import { recognizeValue } from "@/lib/recognize";
+import { scoreEdge, scoreObservedEdges } from "@/lib/scoring";
 
 export interface IngestResult {
   graph: ThreatGraph;
@@ -87,6 +89,7 @@ class GraphBuilder {
       if (extra.lastSeen && !existing.lastSeen) existing.lastSeen = extra.lastSeen;
       return id;
     }
+    const rec = recognizeValue(kind, value);
     this.entities.set(id, {
       id,
       kind,
@@ -97,6 +100,8 @@ class GraphBuilder {
       asName: extra.asName,
       firstSeen: extra.firstSeen,
       lastSeen: extra.lastSeen,
+      category: rec.category,
+      subtype: rec.subtype,
     });
     return id;
   }
@@ -270,14 +275,22 @@ function parseMispGraph(event: any, feed: string): ThreatGraph {
 
     let primary: string | null = null;
     let ipId: string | null = null;
+    let hashId: string | null = null;
     if (ip) ipId = gb.addEntity("ip", ip, { riskScore: risk });
+    // Always register the file hash WITH the object's detection-ratio risk, even
+    // when a domain/ip is the primary node — otherwise a malicious file's score
+    // is dropped and its risk renders as "—" in the report.
+    if (hash) hashId = gb.addEntity("hash", hash, { riskScore: risk });
     if (domain) primary = gb.addEntity("domain", domain, { riskScore: risk });
     if (!primary && url) primary = gb.addEntity("url", url, { riskScore: risk });
-    if (!primary && hash) primary = gb.addEntity("hash", hash, { riskScore: risk });
+    if (!primary && hashId) primary = hashId;
     if (!primary && ipId) primary = ipId;
 
     // domain-ip object encodes a resolution.
     if (primary && ipId && primary !== ipId) gb.addRel(primary, "resolves-to", ipId);
+    // A file seen alongside infrastructure was delivered from / talks to it.
+    if (hashId && primary && hashId !== primary) gb.addRel(hashId, "downloaded-from", primary);
+    if (hashId && ipId && hashId !== ipId) gb.addRel(hashId, "communicates-with", ipId);
     if (primary) primaryByObject.set(o.uuid, primary);
   }
 
@@ -546,7 +559,11 @@ function parseCsv(text: string, gb: GraphBuilder) {
 // ---------------------------------------------------------------------------
 
 export function ingest(text: string, filename = ""): IngestResult {
-  const feed = filename || "upload";
+  // Always derive a real, non-empty feed label. A missing/blank name used to
+  // fall through to `undefined`, which surfaced as the "undefined (66)" feed
+  // in reports; guard it here so the label is always the filename or a stable
+  // fallback.
+  const feed = (typeof filename === "string" && filename.trim()) || "upload";
   const trimmed = text.trim();
 
   // XML? -> OpenIOC (AlienVault OTX)
@@ -888,4 +905,129 @@ export function mergeGraphs(graphs: ThreatGraph[]): ThreatGraph {
   for (const r of rels.values()) r.matched = r.feeds.length > 1;
 
   return { entities: Array.from(entities.values()), relationships: Array.from(rels.values()) };
+}
+
+// ---------------------------------------------------------------------------
+// Case seed-anchors — indicators the investigation is anchored to. Nodes that
+// match are flagged so the graph, clusters, and scoring can surface them.
+// (User-asserted evidence, not adjudicated fact — see plan/case context.)
+// ---------------------------------------------------------------------------
+const ANCHOR_IPS = new Set(["35.199.191.174", "98.64.189.28", "103.224.212.217"]);
+const ANCHOR_DOMAINS = ["agp.com", "elo.agp.com", "corp.agp.com", "catchintelligence.com"];
+
+export function markAnchors(entities: Entity[]): void {
+  for (const e of entities) {
+    const v = e.value.toLowerCase();
+    if (e.kind === "ip" && ANCHOR_IPS.has(v)) e.isAnchor = true;
+    else if (
+      (e.kind === "domain" || e.kind === "url") &&
+      ANCHOR_DOMAINS.some((d) => v === d || v.endsWith(`.${d}`) || v.includes(`//${d}`) || v.includes(`.${d}/`))
+    )
+      e.isAnchor = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-dataset correlation — EARN `SHARES_*` edges. Two distinct nodes that
+// both connect to the same hub artifact (IP, cert, hash, device, user, ASN)
+// share that infrastructure. Each new edge is scored + explained.
+// ---------------------------------------------------------------------------
+
+// Hub categories worth correlating over. A domain hub is intentionally excluded
+// (many things resolve through one domain without being related).
+function shareKindForHub(hub: Entity): EdgeKind | null {
+  if (hub.subtype === "asn") return "shares-asn";
+  if (hub.subtype === "cidr") return "shares-infrastructure";
+  switch (hub.category) {
+    case "infrastructure":
+      return "shares-ip";
+    case "certificate":
+      return "shares-cert";
+    case "malware":
+      return "shares-hash";
+    case "device":
+      return "shares-device";
+    case "user":
+      return "shares-user";
+    default:
+      return null;
+  }
+}
+
+const MAX_HUB_FANOUT = 24; // skip pairwise expansion on very dense hubs
+const MAX_CORRELATION_EDGES = 4000;
+
+function buildCorrelationEdges(graph: ThreatGraph, byId: Map<string, Entity>): Relationship[] {
+  // Adjacency: hub id -> set of endpoint ids directly linked to it.
+  const adj = new Map<string, Set<string>>();
+  const link = (a: string, b: string) => {
+    let s = adj.get(a);
+    if (!s) adj.set(a, (s = new Set()));
+    s.add(b);
+  };
+  for (const r of graph.relationships) {
+    link(r.source, r.target);
+    link(r.target, r.source);
+  }
+
+  const out = new Map<string, Relationship>();
+  for (const hub of graph.entities) {
+    if (out.size >= MAX_CORRELATION_EDGES) break;
+    const kind = shareKindForHub(hub);
+    if (!kind) continue;
+    const neighbors = [...(adj.get(hub.id) ?? [])]
+      .map((id) => byId.get(id))
+      .filter((e): e is Entity => !!e);
+    if (neighbors.length < 2 || neighbors.length > MAX_HUB_FANOUT) continue;
+
+    for (let i = 0; i < neighbors.length; i++) {
+      for (let j = i + 1; j < neighbors.length; j++) {
+        const a = neighbors[i];
+        const b = neighbors[j];
+        // order endpoints for a stable, symmetric edge id
+        const [s, t] = a.id < b.id ? [a, b] : [b, a];
+        const id = `${s.id}|${kind}|${t.id}`;
+        if (out.has(id)) continue;
+        const feeds = [...new Set([...s.feeds, ...t.feeds, ...hub.feeds])];
+        const anchor = !!(s.isAnchor || t.isAnchor || hub.isAnchor);
+        const { confidence, explanation } = scoreEdge({
+          kind,
+          feeds,
+          source: s,
+          target: t,
+          sharedValue: hub.value,
+          anchor,
+        });
+        out.set(id, {
+          id,
+          source: s.id,
+          target: t.id,
+          kind,
+          feeds,
+          matched: feeds.length > 1,
+          confidence,
+          explanation,
+        });
+        if (out.size >= MAX_CORRELATION_EDGES) break;
+      }
+      if (out.size >= MAX_CORRELATION_EDGES) break;
+    }
+  }
+  return [...out.values()];
+}
+
+// Final enrichment pass over the merged graph: mark anchors, correlate shared
+// infrastructure into scored edges, then score every remaining observed edge.
+export function enrichGraph(graph: ThreatGraph): ThreatGraph {
+  markAnchors(graph.entities);
+  const byId = new Map(graph.entities.map((e) => [e.id, e]));
+
+  const relMap = new Map(graph.relationships.map((r) => [r.id, r]));
+  for (const r of buildCorrelationEdges(graph, byId)) {
+    if (!relMap.has(r.id)) relMap.set(r.id, r);
+  }
+  const relationships = [...relMap.values()];
+
+  scoreObservedEdges(relationships, byId);
+  return { entities: graph.entities, relationships };
 }

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mergeGraphs } from "@/lib/ingest";
-import type { EntityKind, ThreatGraph } from "@/lib/network-types";
+import { enrichGraph, mergeGraphs } from "@/lib/ingest";
+import {
+  categoryOf,
+  type Category,
+  type EntityKind,
+  type ThreatGraph,
+} from "@/lib/network-types";
 
 interface LookupBody {
   graphs?: ThreatGraph[];
@@ -21,7 +26,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const graph = mergeGraphs(graphs);
+    // Merge feeds into one graph, then enrich: mark case anchors, correlate
+    // shared infrastructure into scored `SHARES_*` edges, and score + explain
+    // every relationship.
+    const graph = enrichGraph(mergeGraphs(graphs));
 
     if (graph.entities.length === 0) {
       return NextResponse.json(
@@ -41,8 +49,18 @@ export async function POST(request: NextRequest) {
     const byKind = {} as Record<EntityKind, number>;
     for (const e of graph.entities) byKind[e.kind] = (byKind[e.kind] || 0) + 1;
 
+    const byCategory = {} as Record<Category, number>;
+    for (const e of graph.entities) {
+      const c = categoryOf(e);
+      byCategory[c] = (byCategory[c] || 0) + 1;
+    }
+
     const matchedEntities = graph.entities.filter((e) => e.matched).length;
     const matchedEdges = graph.relationships.filter((r) => r.matched).length;
+    const anchors = graph.entities.filter((e) => e.isAnchor).length;
+    const correlationEdges = graph.relationships.filter((r) =>
+      r.kind.startsWith("shares-"),
+    ).length;
 
     return NextResponse.json({
       graph,
@@ -51,8 +69,11 @@ export async function POST(request: NextRequest) {
         entities: graph.entities.length,
         relationships: graph.relationships.length,
         byKind,
+        byCategory,
         matchedEntities,
         matchedEdges,
+        anchors,
+        correlationEdges,
         feeds: feedOrder.length,
       },
     });

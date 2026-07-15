@@ -11,6 +11,12 @@ import {
 import {
   entityColor,
   zoneColor,
+  categoryOf,
+  categoryColor,
+  confidenceColor,
+  CATEGORY_COLOR,
+  CATEGORY_LABEL,
+  CATEGORY_ORDER,
   MATCH_COLOR,
   BRIDGE_COLOR,
   EDGE_KIND_LABEL,
@@ -43,6 +49,7 @@ interface REdge {
   color: string;
   matched: boolean;
   crossZone: boolean;
+  confidence: number;
 }
 
 const KIND_RADIUS: Record<EntityKind, number> = {
@@ -100,8 +107,14 @@ function buildRenderGraph(
       y: cy + Math.sin(angle) * dist,
       vx: 0,
       vy: 0,
-      radius: KIND_RADIUS[e.kind] + Math.min(deg, 6),
-      color: colorMode === "zone" ? zoneColor(e.zone) : entityColor(e, feedOrder),
+      // Node size grows with relationship count (spec: size = degree).
+      radius: KIND_RADIUS[e.kind] + Math.min(deg, 10),
+      color:
+        colorMode === "zone"
+          ? zoneColor(e.zone)
+          : colorMode === "category"
+            ? categoryColor(categoryOf(e))
+            : entityColor(e, feedOrder),
       degree: deg,
     };
   });
@@ -111,9 +124,13 @@ function buildRenderGraph(
   const edges: REdge[] = graph.relationships
     .filter((r) => keep.has(r.source) && keep.has(r.target))
     .map((r) => {
+      const confidence = r.confidence ?? 0;
       let color: string;
       if (colorMode === "zone") {
         color = r.crossZone ? BRIDGE_COLOR : zoneColor(zoneById.get(r.source));
+      } else if (colorMode === "category") {
+        // Edge hue follows confidence band so link strength reads at a glance.
+        color = confidenceColor(confidence);
       } else {
         color = r.matched ? MATCH_COLOR : entityColor({ feeds: r.feeds }, feedOrder);
       }
@@ -123,6 +140,7 @@ function buildRenderGraph(
         kind: r.kind,
         matched: !!r.matched,
         crossZone: !!r.crossZone,
+        confidence,
         color,
       };
     });
@@ -348,7 +366,9 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       if (e.crossZone) ctx.setLineDash([5, 3]);
       ctx.strokeStyle =
         e.color + (focused ? "" : focusId ? "18" : e.crossZone ? "cc" : e.matched ? "70" : "40");
-      ctx.lineWidth = e.crossZone ? 2 : e.matched ? 2 : 1;
+      // Edge thickness encodes confidence (spec): stronger links draw heavier.
+      const confWidth = 0.75 + (e.confidence / 100) * 2.75; // 0.75 .. 3.5
+      ctx.lineWidth = e.crossZone ? Math.max(2, confWidth) : confWidth;
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -389,6 +409,16 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.setLineDash([]);
+      }
+
+      // case seed-anchor marker — a solid gold outer ring so investigation
+      // anchor nodes are unmistakable in any color mode.
+      if (e.isAnchor) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 7, 0, Math.PI * 2);
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
 
       // match glow ring
@@ -596,7 +626,21 @@ function GraphLegend({ colorMode }: { colorMode: ColorMode }) {
   ];
   return (
     <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-border bg-card/90 px-3 py-2 text-xs backdrop-blur-sm">
-      {colorMode === "zone" ? (
+      {colorMode === "category" ? (
+        <>
+          {CATEGORY_ORDER.map((c) => (
+            <span key={c} className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: CATEGORY_COLOR[c] }} />
+              {CATEGORY_LABEL[c]}
+            </span>
+          ))}
+          <span className="text-muted-foreground/50">|</span>
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <span className="inline-block h-0.5 w-4 rounded-full bg-foreground" />
+            <span>Edge weight = confidence</span>
+          </span>
+        </>
+      ) : colorMode === "zone" ? (
         <>
           {ZONE_ORDER.map((z) => (
             <span key={z} className="flex items-center gap-1.5 text-muted-foreground">
