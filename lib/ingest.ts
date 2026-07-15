@@ -1019,6 +1019,16 @@ function buildCorrelationEdges(graph: ThreatGraph, byId: Map<string, Entity>): R
 // Final enrichment pass over the merged graph: mark anchors, correlate shared
 // infrastructure into scored edges, then score every remaining observed edge.
 export function enrichGraph(graph: ThreatGraph): ThreatGraph {
+  // Backfill category/subtype so the correlation engine and visuals work
+  // regardless of which ingest path produced the entities (raw API payloads
+  // and some parsers may not have set them). Cheap, idempotent.
+  for (const e of graph.entities) {
+    if (!e.category || !e.subtype) {
+      const rec = recognizeValue(e.kind, e.value);
+      e.category = e.category ?? rec.category;
+      e.subtype = e.subtype ?? rec.subtype;
+    }
+  }
   markAnchors(graph.entities);
   const byId = new Map(graph.entities.map((e) => [e.id, e]));
 

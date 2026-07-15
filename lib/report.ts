@@ -4,9 +4,13 @@ import {
   ENTITY_KIND_LABEL,
   EDGE_KIND_LABEL,
   feedColor,
+  confidenceBand,
   type EntityKind,
   type ThreatGraph,
 } from "./network-types";
+import { detectClusters } from "./clusters";
+import { buildTimeline } from "./timeline";
+import { SAFETY_DISCLAIMER } from "./safety";
 
 export interface ReportStats {
   entities: number;
@@ -79,6 +83,45 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
   const margin = 40;
   const now = new Date();
 
+  // Derived analysis (pure, runs on whatever graph is being reported).
+  const clusters = detectClusters(graph);
+  const timeline = buildTimeline(graph);
+  const anchors = graph.entities.filter((e) => e.isAnchor);
+  const bridges = graph.entities.filter((e) => e.isBridge);
+
+  // Move y down, adding a page when the next block would overflow.
+  const ensureSpace = (needed: number) => {
+    if (y + needed > pageH - margin) {
+      doc.addPage();
+      y = margin;
+    }
+  };
+
+  // Wrapped body text; advances y. Returns the new y.
+  const writeParagraph = (text: string, opts?: { size?: number; color?: string }) => {
+    const size = opts?.size ?? 9.5;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(size);
+    doc.setTextColor(opts?.color ?? "#334155");
+    const lines = doc.splitTextToSize(text, pageW - margin * 2) as string[];
+    const lineH = size + 3;
+    for (const line of lines) {
+      ensureSpace(lineH + 2);
+      doc.text(line, margin, y);
+      y += lineH;
+    }
+    y += 4;
+  };
+
+  const sectionHeading = (title: string, color = INK) => {
+    ensureSpace(30);
+    doc.setTextColor(color);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(title, margin, y);
+    y += 16;
+  };
+
   // ---- Cover header band ----
   doc.setFillColor(INK);
   doc.rect(0, 0, pageW, 84, "F");
@@ -125,6 +168,60 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
     doc.text(label.toUpperCase(), x + cardW / 2, y + 36, { align: "center" });
   });
   y += 46 + 20;
+
+  // ---- Executive Summary ----
+  sectionHeading("Executive Summary");
+  const spanText =
+    timeline.spanDays > 0
+      ? `Observed activity spans ${timeline.spanDays} day${timeline.spanDays === 1 ? "" : "s"}` +
+        (timeline.earliest && timeline.latest ? ` (${timeline.earliest} to ${timeline.latest}).` : ".")
+      : "No reliable time span could be derived from the supplied timestamps.";
+  writeParagraph(
+    `This report correlates ${stats.entities} indicators and ${stats.relationships} relationships drawn from ` +
+      `${stats.feeds} data source${stats.feeds === 1 ? "" : "s"}. ${stats.matchedEntities} indicator` +
+      `${stats.matchedEntities === 1 ? "" : "s"} were observed in more than one source, and ${clusters.length} ` +
+      `distinct cluster${clusters.length === 1 ? "" : "s"} of related infrastructure were detected. ${spanText} ` +
+      `${anchors.length} case seed-anchor${anchors.length === 1 ? "" : "s"} and ${bridges.length} pivot node` +
+      `${bridges.length === 1 ? "" : "s"} (bridging separate environments) are present. Confidence scores are earned ` +
+      `through cross-source correlation, not assigned by hosting provider.`,
+  );
+
+  // ---- Key Findings ----
+  sectionHeading("Key Findings");
+  const findings: string[] = [];
+  const topMatches = graph.entities
+    .filter((e) => e.matched)
+    .sort((a, b) => b.feeds.length - a.feeds.length || b.riskScore - a.riskScore)
+    .slice(0, 5);
+  for (const e of topMatches) {
+    findings.push(
+      `${e.value} (${ENTITY_KIND_LABEL[e.kind]}) observed across ${e.feeds.length} sources: ${e.feeds.join(", ")}.`,
+    );
+  }
+  for (const a of anchors.slice(0, 5)) {
+    findings.push(`Seed-anchor present: ${a.value} — links observed activity back to the case anchor set.`);
+  }
+  if (bridges.length) {
+    findings.push(
+      `${bridges.length} pivot node${bridges.length === 1 ? "" : "s"} bridge separate environments, e.g. ` +
+        bridges.slice(0, 3).map((b) => b.value).join(", ") + ".",
+    );
+  }
+  if (findings.length === 0) findings.push("No cross-source overlaps were detected in the supplied data.");
+  for (const f of findings) {
+    ensureSpace(16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor("#334155");
+    const lines = doc.splitTextToSize(`•  ${f}`, pageW - margin * 2 - 6) as string[];
+    for (const line of lines) {
+      ensureSpace(13);
+      doc.text(line, margin + 4, y);
+      y += 13;
+    }
+    y += 2;
+  }
+  y += 10;
 
   // ---- Entity-kind breakdown ----
   const kinds = (Object.keys(stats.byKind) as EntityKind[]).filter((k) => stats.byKind[k] > 0);
@@ -237,52 +334,112 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
     });
   }
 
-  // ---- Relationships ----
+  // ---- Relationships grouped by confidence band (spec output format) ----
   if (graph.relationships.length) {
     doc.addPage();
     y = margin;
-    doc.setTextColor(INK);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
-    doc.text(`Relationships (${graph.relationships.length})`, margin, y);
-    y += 6;
-    const rels = graph.relationships.slice(0, MAX_TABLE_ROWS);
+    const bands: { title: string; color: string; min: number; max: number }[] = [
+      { title: "High Confidence Relationships", color: "#16a34a", min: 80, max: 100 },
+      { title: "Moderate Confidence Relationships", color: "#ca8a04", min: 50, max: 79 },
+      { title: "Low Confidence Relationships", color: "#dc2626", min: 20, max: 49 },
+      { title: "Unknown Relationships", color: MUTED, min: 0, max: 19 },
+    ];
+    const sortedRels = [...graph.relationships].sort(
+      (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0),
+    );
+    for (const band of bands) {
+      const inBand = sortedRels.filter((r) => {
+        const c = r.confidence ?? 0;
+        return c >= band.min && c <= band.max;
+      });
+      if (!inBand.length) continue;
+      sectionHeading(`${band.title} (${inBand.length})`, band.color);
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        head: [["Source", "Relationship", "Target", "Conf", "Why"]],
+        body: inBand.slice(0, MAX_TABLE_ROWS).map((r) => [
+          idToValue.get(r.source) || r.source,
+          EDGE_KIND_LABEL[r.kind] || r.kind,
+          idToValue.get(r.target) || r.target,
+          String(r.confidence ?? 0),
+          r.explanation?.why || "",
+        ]),
+        theme: "grid",
+        styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak", font: "courier" },
+        headStyles: { fillColor: INK, textColor: "#ffffff", font: "helvetica" },
+        columnStyles: {
+          0: { cellWidth: 110 },
+          1: { font: "helvetica", cellWidth: 70 },
+          2: { cellWidth: 110 },
+          3: { halign: "right", cellWidth: 30, font: "helvetica" },
+          4: { font: "helvetica" },
+        },
+      });
+      // @ts-expect-error runtime plugin property
+      y = doc.lastAutoTable.finalY + 18;
+      if (inBand.length > MAX_TABLE_ROWS) {
+        writeParagraph(
+          `Showing first ${MAX_TABLE_ROWS} of ${inBand.length} in this band.`,
+          { size: 8, color: MUTED },
+        );
+      }
+    }
+  }
+
+  // ---- Explain This Cluster ----
+  if (clusters.length) {
+    doc.addPage();
+    y = margin;
+    sectionHeading("Explain This Cluster");
+    for (const c of clusters.slice(0, 8)) {
+      ensureSpace(40);
+      doc.setTextColor(ACCENT);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text(
+        `Cluster ${c.id} — ${c.size} nodes, ${c.edgeCount} relationships, avg confidence ${c.avgConfidence}%`,
+        margin,
+        y,
+      );
+      y += 14;
+      writeParagraph(c.narrative);
+    }
+  }
+
+  // ---- Timeline ----
+  if (timeline.events.length) {
+    doc.addPage();
+    y = margin;
+    sectionHeading("Timeline");
+    writeParagraph(
+      timeline.spanDays > 0
+        ? `${timeline.observedCount} indicators carry timestamps, spanning ${timeline.spanDays} day` +
+            `${timeline.spanDays === 1 ? "" : "s"} from ${timeline.earliest} to ${timeline.latest}.`
+        : `${timeline.observedCount} indicators carry timestamps.`,
+      { size: 9 },
+    );
     autoTable(doc, {
       startY: y,
       margin: { left: margin, right: margin },
-      head: [["Source", "Relationship", "Target", "Match"]],
-      body: rels.map((r) => [
-        idToValue.get(r.source) || r.source,
-        EDGE_KIND_LABEL[r.kind] || r.kind,
-        idToValue.get(r.target) || r.target,
-        r.matched ? "yes" : "",
+      head: [["Date", "Event", "Indicator", "Detail"]],
+      body: timeline.events.slice(0, MAX_TABLE_ROWS).map((ev) => [
+        ev.date,
+        ev.type,
+        ev.value,
+        ev.detail,
       ]),
-      theme: "grid",
-      styles: { fontSize: 8, cellPadding: 3, overflow: "linebreak", font: "courier" },
-      headStyles: { fillColor: INK, textColor: "#ffffff", font: "helvetica" },
+      theme: "striped",
+      styles: { fontSize: 8, cellPadding: 3, overflow: "linebreak" },
+      headStyles: { fillColor: INK, textColor: "#ffffff" },
       columnStyles: {
-        1: { font: "helvetica", cellWidth: 90 },
-        3: { halign: "center", cellWidth: 44, font: "helvetica" },
-      },
-      didParseCell: (data) => {
-        if (data.section === "body" && data.column.index === 3 && data.cell.raw === "yes") {
-          data.cell.styles.textColor = MATCH;
-          data.cell.styles.fontStyle = "bold";
-        }
+        0: { cellWidth: 90, font: "courier" },
+        1: { cellWidth: 64 },
+        2: { cellWidth: 130, font: "courier" },
       },
     });
-    if (graph.relationships.length > MAX_TABLE_ROWS) {
-      // @ts-expect-error runtime plugin property
-      const fy = doc.lastAutoTable.finalY + 14;
-      doc.setTextColor(MUTED);
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(8);
-      doc.text(
-        `Showing first ${MAX_TABLE_ROWS} of ${graph.relationships.length} relationships.`,
-        margin,
-        fy,
-      );
-    }
+    // @ts-expect-error runtime plugin property
+    y = doc.lastAutoTable.finalY + 18;
   }
 
   // ---- Full entity inventory ----
@@ -336,6 +493,49 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
       );
     }
   }
+
+  // ---- Recommended Next Investigation ----
+  doc.addPage();
+  y = margin;
+  sectionHeading("Recommended Next Investigation");
+  const recs: string[] = [];
+  const unresolvedMatches = graph.entities.filter((e) => e.matched && e.riskScore === 0);
+  if (anchors.length)
+    recs.push(
+      `Enrich the ${anchors.length} seed-anchor node${anchors.length === 1 ? "" : "s"} with current WHOIS, ` +
+        `passive DNS, and TLS certificate data to confirm whether infrastructure has migrated.`,
+    );
+  if (bridges.length)
+    recs.push(
+      `Investigate the ${bridges.length} pivot node${bridges.length === 1 ? "" : "s"} first — they connect ` +
+        `otherwise separate environments and are the most probable crossover points.`,
+    );
+  if (unresolvedMatches.length)
+    recs.push(
+      `Submit the ${unresolvedMatches.length} cross-source indicator${unresolvedMatches.length === 1 ? "" : "s"} ` +
+        `that currently have no risk score for reputation/detection lookup.`,
+    );
+  recs.push(
+    "Preserve source files and hashes alongside this report so every relationship remains traceable to its origin.",
+  );
+  for (const r of recs) {
+    ensureSpace(16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor("#334155");
+    const lines = doc.splitTextToSize(`•  ${r}`, pageW - margin * 2 - 6) as string[];
+    for (const line of lines) {
+      ensureSpace(13);
+      doc.text(line, margin + 4, y);
+      y += 13;
+    }
+    y += 2;
+  }
+  y += 12;
+
+  // ---- Safety / methodology note ----
+  sectionHeading("Methodology & Safety", MUTED);
+  writeParagraph(SAFETY_DISCLAIMER, { size: 8.5, color: MUTED });
 
   // ---- Page footers ----
   const pages = doc.getNumberOfPages();

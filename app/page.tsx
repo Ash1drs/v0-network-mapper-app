@@ -11,7 +11,7 @@ import { applyZones, zoneCounts, bridgeCount, type ZoneOverrides } from "@/lib/z
 import { exportPng, canvasToPng, generatePdfReport, type ReportStats } from "@/lib/report";
 import { Activity, ChevronDown, ChevronUp, ImageDown, FileDown, Palette } from "lucide-react";
 
-export type ColorMode = "feed" | "zone";
+export type ColorMode = "feed" | "zone" | "category";
 
 interface AnalysisStats {
   entities: number;
@@ -249,7 +249,7 @@ export default function Page() {
               {/* Color-by segmented toggle: Feed source vs Environment zone */}
               <div className="inline-flex items-center rounded-md border border-border bg-card p-0.5">
                 <Palette className="mx-1.5 h-3.5 w-3.5 text-muted-foreground" />
-                {(["feed", "zone"] as ColorMode[]).map((mode) => (
+                {(["feed", "zone", "category"] as ColorMode[]).map((mode) => (
                   <button
                     key={mode}
                     type="button"
@@ -260,7 +260,7 @@ export default function Page() {
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    {mode === "zone" ? "Environment" : "Feed"}
+                    {mode === "zone" ? "Environment" : mode === "category" ? "Type" : "Feed"}
                   </button>
                 ))}
               </div>

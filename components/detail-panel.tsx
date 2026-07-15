@@ -15,6 +15,12 @@ import { Button } from "@/components/ui/button";
 import {
   entityColor,
   zoneColor,
+  categoryOf,
+  categoryColor,
+  confidenceColor,
+  CATEGORY_LABEL,
+  confidenceBand,
+  confidenceBandLabel,
   EDGE_KIND_LABEL,
   ENTITY_KIND_LABEL,
   MATCH_COLOR,
@@ -28,7 +34,7 @@ import {
   type Zone,
 } from "@/lib/network-types";
 import type { ColorMode } from "@/app/page";
-import { GitBranch } from "lucide-react";
+import { GitBranch, ShieldAlert } from "lucide-react";
 
 function riskColor(score: number): string {
   if (score >= 70) return "#f87171";
@@ -86,7 +92,11 @@ export function DetailPanel({
       .filter((c) => c.other);
 
     const color =
-      colorMode === "zone" ? zoneColor(selected.zone) : entityColor(selected, feedOrder);
+      colorMode === "zone"
+        ? zoneColor(selected.zone)
+        : colorMode === "category"
+          ? categoryColor(categoryOf(selected))
+          : entityColor(selected, feedOrder);
 
     return (
       <div className="flex flex-col gap-3">
@@ -118,8 +128,26 @@ export function DetailPanel({
 
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <span className="rounded-full border border-border px-2 py-0.5 text-xs font-mono text-muted-foreground">
-              {ENTITY_KIND_LABEL[selected.kind]}
+              {selected.subtype ?? ENTITY_KIND_LABEL[selected.kind]}
             </span>
+            <span
+              className="rounded-full px-2 py-0.5 text-xs font-mono"
+              style={{
+                backgroundColor: categoryColor(categoryOf(selected)) + "20",
+                color: categoryColor(categoryOf(selected)),
+              }}
+            >
+              {CATEGORY_LABEL[categoryOf(selected)]}
+            </span>
+            {selected.isAnchor && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-mono font-bold"
+                style={{ backgroundColor: "#fbbf2422", color: "#fbbf24" }}
+              >
+                <ShieldAlert className="h-3 w-3" />
+                anchor
+              </span>
+            )}
             {selected.riskScore > 0 && (
               <span
                 className="rounded-full px-2 py-0.5 text-xs font-mono font-bold"
@@ -245,46 +273,66 @@ export function DetailPanel({
             )}
             {connections.map(({ rel, other, direction }) => {
               if (!other) return null;
-              const oc = colorMode === "zone" ? zoneColor(other.zone) : entityColor(other, feedOrder);
+              const oc =
+                colorMode === "zone"
+                  ? zoneColor(other.zone)
+                  : colorMode === "category"
+                    ? categoryColor(categoryOf(other))
+                    : entityColor(other, feedOrder);
+              const conf = rel.confidence ?? 0;
               return (
-                <button
-                  key={rel.id}
-                  type="button"
-                  onClick={() => onSelect(other)}
-                  className="flex w-full items-center gap-2 border-b border-border/50 px-2 py-2 text-left last:border-0 hover:bg-secondary/30 min-h-[44px]"
-                >
-                  <KindIcon
-                    kind={other.kind}
-                    className="h-3 w-3 shrink-0 text-muted-foreground"
-                  />
-                  <div className="flex flex-1 flex-col overflow-hidden">
-                    <span className="truncate text-xs font-mono text-foreground">
-                      {other.value}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {direction === "out" ? "" : "\u2190 "}
-                      {EDGE_KIND_LABEL[rel.kind]}
-                      {direction === "out" ? " \u2192" : ""}
-                    </span>
-                  </div>
-                  {rel.crossZone && (
-                    <GitBranch
-                      className="h-3 w-3 shrink-0"
-                      style={{ color: BRIDGE_COLOR }}
+                <div key={rel.id} className="border-b border-border/50 last:border-0">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(other)}
+                    className="flex w-full items-center gap-2 px-2 py-2 text-left hover:bg-secondary/30 min-h-[44px]"
+                  >
+                    <KindIcon
+                      kind={other.kind}
+                      className="h-3 w-3 shrink-0 text-muted-foreground"
                     />
-                  )}
-                  {rel.matched && (
+                    <div className="flex flex-1 flex-col overflow-hidden">
+                      <span className="truncate text-xs font-mono text-foreground">
+                        {other.value}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {direction === "out" ? "" : "\u2190 "}
+                        {EDGE_KIND_LABEL[rel.kind]}
+                        {direction === "out" ? " \u2192" : ""}
+                      </span>
+                    </div>
+                    {rel.crossZone && (
+                      <GitBranch
+                        className="h-3 w-3 shrink-0"
+                        style={{ color: BRIDGE_COLOR }}
+                      />
+                    )}
+                    {conf > 0 && (
+                      <span
+                        className="shrink-0 rounded px-1 py-0.5 text-[10px] font-mono font-bold"
+                        style={{ backgroundColor: confidenceColor(conf) + "20", color: confidenceColor(conf) }}
+                        title={`${confidenceBandLabel(confidenceBand(conf))} (${conf})`}
+                      >
+                        {conf}
+                      </span>
+                    )}
                     <span
-                      className="h-1.5 w-1.5 rounded-full shrink-0"
-                      style={{ backgroundColor: MATCH_COLOR }}
-                      title="Shared across feeds"
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: oc }}
                     />
+                  </button>
+                  {rel.explanation?.why && (
+                    <p className="px-2 pb-2 text-[11px] leading-relaxed text-muted-foreground text-pretty">
+                      {rel.explanation.why}
+                      {rel.explanation.sources?.length ? (
+                        <span className="text-muted-foreground/70">
+                          {" "}
+                          &middot; {rel.explanation.sources.join(", ")}
+                        </span>
+                      ) : null}
+                    </p>
                   )}
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ backgroundColor: oc }}
-                  />
-                </button>
+                </div>
               );
             })}
           </div>
@@ -331,7 +379,11 @@ export function DetailPanel({
       <div className="flex flex-col gap-1.5 max-h-[50vh] overflow-y-auto">
         {top.map((entity) => {
           const color =
-            colorMode === "zone" ? zoneColor(entity.zone) : entityColor(entity, feedOrder);
+            colorMode === "zone"
+              ? zoneColor(entity.zone)
+              : colorMode === "category"
+                ? categoryColor(categoryOf(entity))
+                : entityColor(entity, feedOrder);
           const deg = degree.get(entity.id) || 0;
           return (
             <button

@@ -6,14 +6,27 @@
 // parse the PDF and concatenate the text content of every page, which the
 // free-text IOC extractor in lib/ingest.ts can then scan.
 
-import * as pdfjsLib from "pdfjs-dist";
+// pdfjs-dist references browser globals (DOMMatrix, etc.) at module-evaluation
+// time, so importing it at the top level crashes during server-side rendering.
+// We load it lazily on first use — which only ever happens in the browser when
+// a user actually parses a PDF — and cache the module.
+type PdfjsModule = typeof import("pdfjs-dist");
+let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
-// Point pdf.js at its worker. The `new URL(..., import.meta.url)` form is
-// resolved and bundled by the app's bundler (Turbopack/webpack).
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
+async function loadPdfjs(): Promise<PdfjsModule> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import("pdfjs-dist").then((pdfjsLib) => {
+      // Point pdf.js at its worker. The `new URL(..., import.meta.url)` form is
+      // resolved and bundled by the app's bundler (Turbopack/webpack).
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url,
+      ).toString();
+      return pdfjsLib;
+    });
+  }
+  return pdfjsPromise;
+}
 
 export async function isPdf(file: File): Promise<boolean> {
   if (file.type === "application/pdf") return true;
@@ -29,6 +42,7 @@ export async function isPdf(file: File): Promise<boolean> {
 }
 
 export async function extractPdfText(file: File): Promise<string> {
+  const pdfjsLib = await loadPdfjs();
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = pdfjsLib.getDocument({ data });
   const doc = await loadingTask.promise;
