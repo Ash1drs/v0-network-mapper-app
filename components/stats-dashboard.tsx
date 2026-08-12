@@ -11,7 +11,7 @@ import {
   Globe,
   Hash,
 } from "lucide-react";
-import type { AsnGroup, DnsRecord } from "@/lib/network-types";
+import { clusterLabel, type AsnGroup, type DnsRecord } from "@/lib/network-types";
 
 interface StatsDashboardProps {
   groups: AsnGroup[];
@@ -277,7 +277,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                     style={{ backgroundColor: group.color }}
                   />
                   <span className="flex-1 truncate font-mono text-foreground">
-                    AS{group.asn}
+                    {clusterLabel(group.asn)}
                   </span>
                   <span className="font-mono text-muted-foreground">
                     {group.ips.length} IPs
@@ -303,7 +303,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                     style={{ backgroundColor: riskColor(group.maxRiskScore) }}
                   />
                   <span className="flex-1 truncate font-mono text-foreground">
-                    AS{group.asn}
+                    {clusterLabel(group.asn)}
                   </span>
                   <span
                     className="font-mono font-bold"

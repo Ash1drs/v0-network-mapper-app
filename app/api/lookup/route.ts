@@ -1,92 +1,87 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { DnsRecord, AsnGroup } from "@/lib/network-types";
+import { enrichGraph, mergeGraphs } from "@/lib/ingest";
+import {
+  categoryOf,
+  type Category,
+  type EntityKind,
+  type ThreatGraph,
+} from "@/lib/network-types";
 
-const GROUP_COLORS = [
-  "#22d3ee", "#34d399", "#f59e0b", "#f472b6",
-  "#a78bfa", "#fb923c", "#38bdf8", "#4ade80",
-  "#e879f9", "#facc15", "#2dd4bf", "#f87171",
-  "#818cf8", "#a3e635", "#fbbf24", "#c084fc",
-];
+interface LookupBody {
+  graphs?: ThreatGraph[];
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    let records: DnsRecord[] = [];
+    const body = (await request.json()) as LookupBody;
+    const graphs = Array.isArray(body.graphs) ? body.graphs : [];
 
-    // Accept either { records: [...] } or a raw array
-    if (Array.isArray(body)) {
-      records = body;
-    } else if (body.records && Array.isArray(body.records)) {
-      records = body.records;
-    } else {
+    if (graphs.length === 0) {
       return NextResponse.json(
-        { error: "Could not find DNS records in uploaded data. Expected a JSON array of objects with query/answer fields." },
-        { status: 400 }
+        {
+          error:
+            "No graphs to analyze. Upload STIX, MISP/VirusTotal, OpenIOC (AlienVault), passive DNS, or CSV data.",
+        },
+        { status: 400 },
       );
     }
 
-    // Validate we actually have the right shape
-    const valid = records.filter(
-      (r) => r.query && r.answer && r.answer_asn !== undefined
-    );
+    // Merge feeds into one graph, then enrich: mark case anchors, correlate
+    // shared infrastructure into scored `SHARES_*` edges, and score + explain
+    // every relationship.
+    const graph = enrichGraph(mergeGraphs(graphs));
 
-    if (valid.length === 0) {
+    if (graph.entities.length === 0) {
       return NextResponse.json(
-        { error: "No valid DNS records found. Each record needs at least query, answer, and answer_asn fields." },
-        { status: 400 }
+        {
+          error:
+            "No indicators found. Each feed needs at least one domain, IP, URL, or file hash.",
+        },
+        { status: 400 },
       );
     }
 
-    // Group by ASN
-    const asnMap = new Map<string, { asName: string; ips: Set<string>; domains: Set<string>; records: DnsRecord[]; riskScores: number[]; totalCount: number }>();
+    // Feed order = order feeds first appear, used for stable per-feed coloring.
+    const feedOrder: string[] = [];
+    for (const e of graph.entities)
+      for (const f of e.feeds) if (!feedOrder.includes(f)) feedOrder.push(f);
 
-    for (const r of valid) {
-      const key = r.answer_asn || "unknown";
-      if (!asnMap.has(key)) {
-        asnMap.set(key, {
-          asName: r.answer_as_name || "Unknown",
-          ips: new Set(),
-          domains: new Set(),
-          records: [],
-          riskScores: [],
-          totalCount: 0,
-        });
-      }
-      const group = asnMap.get(key)!;
-      group.ips.add(r.answer);
-      group.domains.add(r.query);
-      group.records.push(r);
-      group.riskScores.push(r.answer_risk_score);
-      group.totalCount += r.count;
+    const byKind = {} as Record<EntityKind, number>;
+    for (const e of graph.entities) byKind[e.kind] = (byKind[e.kind] || 0) + 1;
+
+    const byCategory = {} as Record<Category, number>;
+    for (const e of graph.entities) {
+      const c = categoryOf(e);
+      byCategory[c] = (byCategory[c] || 0) + 1;
     }
 
-    let colorIndex = 0;
-    const groups: AsnGroup[] = Array.from(asnMap.entries())
-      .sort((a, b) => b[1].ips.size - a[1].ips.size)
-      .map(([asn, data]) => ({
-        asn,
-        asName: data.asName,
-        ips: Array.from(data.ips),
-        domains: Array.from(data.domains),
-        records: data.records,
-        maxRiskScore: Math.max(...data.riskScores),
-        avgRiskScore: Math.round(data.riskScores.reduce((a, b) => a + b, 0) / data.riskScores.length),
-        totalCount: data.totalCount,
-        color: GROUP_COLORS[colorIndex++ % GROUP_COLORS.length],
-      }));
+    const matchedEntities = graph.entities.filter((e) => e.matched).length;
+    const matchedEdges = graph.relationships.filter((r) => r.matched).length;
+    const anchors = graph.entities.filter((e) => e.isAnchor).length;
+    const correlationEdges = graph.relationships.filter((r) =>
+      r.kind.startsWith("shares-"),
+    ).length;
 
     return NextResponse.json({
-      groups,
-      totalRecords: valid.length,
-      uniqueIps: new Set(valid.map((r) => r.answer)).size,
-      uniqueDomains: new Set(valid.map((r) => r.query)).size,
-      uniqueAsns: asnMap.size,
+      graph,
+      feedOrder,
+      stats: {
+        entities: graph.entities.length,
+        relationships: graph.relationships.length,
+        byKind,
+        byCategory,
+        matchedEntities,
+        matchedEdges,
+        anchors,
+        correlationEdges,
+        feeds: feedOrder.length,
+      },
     });
   } catch (error) {
-    console.error("Parse error:", error);
+    console.error("[v0] lookup parse error:", error);
     return NextResponse.json(
-      { error: "Failed to parse uploaded data. Make sure it's valid JSON." },
-      { status: 500 }
+      { error: "Failed to analyze uploaded data." },
+      { status: 500 },
     );
   }
 }

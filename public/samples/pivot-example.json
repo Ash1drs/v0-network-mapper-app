@@ -1,0 +1,47 @@
+{
+  "Event": {
+    "info": "Personal-to-corporate pivot (illustrative sample)",
+    "Object": [
+      {
+        "uuid": "11111111-0000-0000-0000-000000000001",
+        "name": "domain-ip",
+        "Attribute": [
+          { "object_relation": "domain", "type": "domain", "value": "jane.personal.gmail.com" },
+          { "object_relation": "ip", "type": "ip-dst", "value": "203.0.113.10" }
+        ],
+        "ObjectReference": [
+          { "referenced_uuid": "11111111-0000-0000-0000-000000000002", "relationship_type": "communicates-with" }
+        ]
+      },
+      {
+        "uuid": "11111111-0000-0000-0000-000000000002",
+        "name": "domain-ip",
+        "Attribute": [
+          { "object_relation": "domain", "type": "domain", "value": "login-okta.symantke.com" },
+          { "object_relation": "ip", "type": "ip-dst", "value": "198.51.100.23" },
+          { "object_relation": "detection-ratio", "type": "text", "value": "58/91" }
+        ],
+        "ObjectReference": [
+          { "referenced_uuid": "11111111-0000-0000-0000-000000000003", "relationship_type": "communicates-with" },
+          { "referenced_uuid": "11111111-0000-0000-0000-000000000004", "relationship_type": "communicates-with" }
+        ]
+      },
+      {
+        "uuid": "11111111-0000-0000-0000-000000000003",
+        "name": "domain-ip",
+        "Attribute": [
+          { "object_relation": "domain", "type": "domain", "value": "acme.my.salesforce.com" },
+          { "object_relation": "ip", "type": "ip-dst", "value": "192.0.2.44" }
+        ]
+      },
+      {
+        "uuid": "11111111-0000-0000-0000-000000000004",
+        "name": "domain-ip",
+        "Attribute": [
+          { "object_relation": "domain", "type": "domain", "value": "ship.fedex.com" },
+          { "object_relation": "ip", "type": "ip-dst", "value": "192.0.2.77" }
+        ]
+      }
+    ]
+  }
+}
