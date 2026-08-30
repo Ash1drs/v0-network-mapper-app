@@ -232,6 +232,7 @@ export default function Page() {
             ref={graphRef}
             groups={filteredGroups}
             onSelectGroup={setSelectedGroup}
+            selectedAsn={selectedGroup?.asn ?? null}
           />
         </section>
       </div>

@@ -204,10 +204,11 @@ function simulateForces(
 interface NetworkGraphProps {
   groups: AsnGroup[];
   onSelectGroup: (group: AsnGroup | null) => void;
+  selectedAsn?: string | null;
 }
 
 export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
-  function NetworkGraph({ groups, onSelectGroup }, ref) {
+  function NetworkGraph({ groups, onSelectGroup, selectedAsn = null }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const nodesRef = useRef<GraphNode[]>([]);
@@ -244,12 +245,12 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       edgesRef.current = [];
       return;
     }
-    const { nodes, edges } = buildGraph(groups, canvasSize.width, canvasSize.height);
+    const { nodes, edges } = buildGraph(groups, canvasSize.width, canvasSize.height, selectedAsn);
     nodesRef.current = nodes;
     edgesRef.current = edges;
     resetSimTemperature();
     needsRedrawRef.current = true;
-  }, [groups, canvasSize.width, canvasSize.height]);
+  }, [groups, canvasSize.width, canvasSize.height, selectedAsn]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
