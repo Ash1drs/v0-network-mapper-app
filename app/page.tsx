@@ -8,7 +8,10 @@ import { FilterControls, createDefaultFilters, type FilterState } from "@/compon
 import { StatsDashboard } from "@/components/stats-dashboard";
 import { TimelineSlider } from "@/components/timeline-slider";
 import { ExportControls } from "@/components/export-controls";
+import { LineagePanel } from "@/components/lineage-panel";
 import type { DnsRecord, AsnGroup } from "@/lib/network-types";
+import type { Lineage } from "@/lib/origin-trace";
+import { buildLineageForAsn, buildLineageForIp } from "@/lib/origin-trace";
 import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 
 interface AnalysisStats {
@@ -31,8 +34,17 @@ export default function Page() {
     start: null,
     end: null,
   });
+  const [lineage, setLineage] = useState<Lineage | null>(null);
 
   const graphRef = useRef<NetworkGraphHandle>(null);
+
+  const handleTraceAsn = useCallback((group: AsnGroup) => {
+    setLineage(buildLineageForAsn(group));
+  }, []);
+
+  const handleTraceIp = useCallback((ip: string, group: AsnGroup) => {
+    setLineage(buildLineageForIp(ip, group));
+  }, []);
 
   // Get canvas directly from graphRef when needed
   const getCanvasRef = useCallback(() => {
@@ -103,12 +115,14 @@ export default function Page() {
       setError(null);
       setFilters(createDefaultFilters());
       setDateRange({ start: null, end: null });
+      setLineage(null);
       return;
     }
 
     setIsLoading(true);
     setError(null);
     setSelectedGroup(null);
+    setLineage(null);
 
     try {
       const res = await fetch("/api/lookup", {
@@ -189,6 +203,12 @@ export default function Page() {
               panelOpen ? "block" : "hidden lg:block"
             }`}
           >
+            {lineage && (
+              <div className="rounded-lg border border-primary/30 bg-card p-3">
+                <LineagePanel lineage={lineage} onClose={() => setLineage(null)} />
+              </div>
+            )}
+
             <UploadPanel
               onAnalyze={handleAnalyze}
               isLoading={isLoading}
@@ -222,6 +242,8 @@ export default function Page() {
               selectedGroup={selectedGroup}
               groups={filteredGroups}
               onSelectGroup={setSelectedGroup}
+              onTraceAsn={handleTraceAsn}
+              onTraceIp={handleTraceIp}
             />
           </div>
         </aside>

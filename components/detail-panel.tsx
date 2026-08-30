@@ -12,6 +12,7 @@ import {
   X,
   ChevronDown,
   ChevronRight,
+  Crown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -116,9 +117,11 @@ interface DetailPanelProps {
   selectedGroup: AsnGroup | null;
   groups: AsnGroup[];
   onSelectGroup: (group: AsnGroup | null) => void;
+  onTraceAsn?: (group: AsnGroup) => void;
+  onTraceIp?: (ip: string, group: AsnGroup) => void;
 }
 
-export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPanelProps) {
+export function DetailPanel({ selectedGroup, groups, onSelectGroup, onTraceAsn, onTraceIp }: DetailPanelProps) {
   if (selectedGroup) {
     return (
       <div className="flex flex-col gap-3">
@@ -156,23 +159,50 @@ export function DetailPanel({ selectedGroup, groups, onSelectGroup }: DetailPane
             <RiskBadge score={selectedGroup.avgRiskScore} label="Avg Risk" />
           </div>
 
+          {onTraceAsn && (
+            <Button
+              onClick={() => onTraceAsn(selectedGroup)}
+              className="mb-3 w-full min-h-[44px] gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Crown className="h-4 w-4" />
+              Trace Origin
+            </Button>
+          )}
+
           <div className="flex flex-wrap gap-1 mb-3">
             <span className="text-xs text-muted-foreground w-full mb-1">
-              {selectedGroup.ips.length} IP{selectedGroup.ips.length !== 1 ? "s" : ""}:
+              {selectedGroup.ips.length} IP{selectedGroup.ips.length !== 1 ? "s" : ""}
+              {onTraceIp ? " (tap to trace)" : ""}:
             </span>
-            {selectedGroup.ips.slice(0, 20).map((ip) => (
-              <span
-                key={ip}
-                className="inline-block rounded-md border px-1.5 py-0.5 font-mono text-xs"
-                style={{
-                  borderColor: selectedGroup.color + "50",
-                  color: selectedGroup.color,
-                  backgroundColor: selectedGroup.color + "10",
-                }}
-              >
-                {ip}
-              </span>
-            ))}
+            {selectedGroup.ips.slice(0, 20).map((ip) =>
+              onTraceIp ? (
+                <button
+                  key={ip}
+                  type="button"
+                  onClick={() => onTraceIp(ip, selectedGroup)}
+                  className="inline-block rounded-md border px-1.5 py-0.5 font-mono text-xs transition-opacity hover:opacity-70"
+                  style={{
+                    borderColor: selectedGroup.color + "50",
+                    color: selectedGroup.color,
+                    backgroundColor: selectedGroup.color + "10",
+                  }}
+                >
+                  {ip}
+                </button>
+              ) : (
+                <span
+                  key={ip}
+                  className="inline-block rounded-md border px-1.5 py-0.5 font-mono text-xs"
+                  style={{
+                    borderColor: selectedGroup.color + "50",
+                    color: selectedGroup.color,
+                    backgroundColor: selectedGroup.color + "10",
+                  }}
+                >
+                  {ip}
+                </span>
+              )
+            )}
             {selectedGroup.ips.length > 20 && (
               <span className="text-xs text-muted-foreground">
                 +{selectedGroup.ips.length - 20} more
