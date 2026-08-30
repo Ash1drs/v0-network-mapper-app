@@ -38,9 +38,13 @@ export interface GraphNode {
   y: number;
   vx: number;
   vy: number;
+  // Anchor position the node springs back toward (keeps layout stable)
+  homeX: number;
+  homeY: number;
   radius: number;
   color: string;
   riskScore: number;
+  parentId?: string;
   data?: DnsRecord;
   asnGroup?: AsnGroup;
 }
