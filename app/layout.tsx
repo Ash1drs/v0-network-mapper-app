@@ -1,14 +1,19 @@
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Geist, Geist_Mono, EB_Garamond } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
+const garamond = EB_Garamond({
+  subsets: ["latin", "greek"],
+  weight: ["500", "600", "700"],
+  variable: "--font-garamond",
+});
 
 export const metadata: Metadata = {
-  title: 'NetMap - Network Intelligence Mapper',
-  description: 'Visualize IP networks, identify organizations, and map CIDR blocks with an interactive force-directed graph.',
+  title: 'Θεία — Relationship Map',
+  description: 'Map the relationships between domains, IPs, networks, and the organizations behind them, and trace every connection back to its origin.',
   generator: 'v0.app',
   manifest: '/manifest.json',
   icons: {
@@ -34,7 +39,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
-  themeColor: '#1a1a2e',
+  themeColor: '#0d0b08',
 }
 
 export default function RootLayout({
@@ -43,7 +48,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className="bg-background">
+    <html lang="en" className={`bg-background ${garamond.variable}`}>
       <body className="font-sans antialiased">
         {children}
         <Analytics />

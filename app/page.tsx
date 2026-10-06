@@ -12,7 +12,7 @@ import { LineagePanel } from "@/components/lineage-panel";
 import type { DnsRecord, AsnGroup } from "@/lib/network-types";
 import type { Lineage } from "@/lib/origin-trace";
 import { buildLineageForAsn, buildLineageForIp } from "@/lib/origin-trace";
-import { Activity, ChevronDown, ChevronUp } from "lucide-react";
+import { Orbit, ChevronDown, ChevronUp } from "lucide-react";
 
 interface AnalysisStats {
   totalRecords: number;
@@ -161,10 +161,18 @@ export default function Page() {
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="flex items-center gap-2.5">
-          <Activity className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-bold tracking-tight text-foreground font-mono">
-            NetMap
-          </h1>
+          <Orbit className="h-5 w-5 text-primary" aria-hidden="true" />
+          <div className="flex flex-col gap-1 leading-none">
+            <h1
+              className="font-serif text-2xl font-semibold tracking-wide text-foreground"
+              style={{ fontFamily: "var(--font-garamond), 'EB Garamond', serif" }}
+            >
+              Θεία
+            </h1>
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">
+              Relationship Map
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {groups.length > 0 && (
@@ -174,9 +182,6 @@ export default function Page() {
               getCanvas={getCanvasRef}
             />
           )}
-          <span className="text-xs font-mono text-muted-foreground hidden sm:inline">
-            Infrastructure Intelligence Mapper
-          </span>
         </div>
       </header>
 

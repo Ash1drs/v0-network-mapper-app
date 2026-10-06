@@ -512,7 +512,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
             <line x1="14.5" y1="14.5" x2="17.5" y2="17.5" />
           </svg>
           <p className="text-muted-foreground text-sm">
-            Upload INFRARUN or passive DNS data to map infrastructure
+            Upload data to map the relationships between domains, IPs, and the organizations behind them
           </p>
         </div>
       </div>
