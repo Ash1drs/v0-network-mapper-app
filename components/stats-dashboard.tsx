@@ -19,10 +19,10 @@ interface StatsDashboardProps {
 }
 
 function riskColor(score: number): string {
-  if (score >= 70) return "#f87171";
-  if (score >= 40) return "#fbbf24";
-  if (score >= 20) return "#38bdf8";
-  return "#4ade80";
+  if (score >= 70) return "#d6503f";
+  if (score >= 40) return "#d9a441";
+  if (score >= 20) return "#bf9152";
+  return "#8a7f52";
 }
 
 export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
@@ -165,8 +165,8 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                   className="flex items-center justify-center text-xs font-bold"
                   style={{
                     width: `${(stats.riskBuckets.critical / riskTotal) * 100}%`,
-                    backgroundColor: "#f87171",
-                    color: "#1a1a2e",
+                    backgroundColor: "#d6503f",
+                    color: "#14110c",
                   }}
                   title={`Critical: ${stats.riskBuckets.critical}`}
                 >
@@ -180,8 +180,8 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                   className="flex items-center justify-center text-xs font-bold"
                   style={{
                     width: `${(stats.riskBuckets.high / riskTotal) * 100}%`,
-                    backgroundColor: "#fbbf24",
-                    color: "#1a1a2e",
+                    backgroundColor: "#d9a441",
+                    color: "#14110c",
                   }}
                   title={`High: ${stats.riskBuckets.high}`}
                 >
@@ -195,8 +195,8 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                   className="flex items-center justify-center text-xs font-bold"
                   style={{
                     width: `${(stats.riskBuckets.medium / riskTotal) * 100}%`,
-                    backgroundColor: "#38bdf8",
-                    color: "#1a1a2e",
+                    backgroundColor: "#bf9152",
+                    color: "#14110c",
                   }}
                   title={`Medium: ${stats.riskBuckets.medium}`}
                 >
@@ -210,8 +210,8 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
                   className="flex items-center justify-center text-xs font-bold"
                   style={{
                     width: `${(stats.riskBuckets.low / riskTotal) * 100}%`,
-                    backgroundColor: "#4ade80",
-                    color: "#1a1a2e",
+                    backgroundColor: "#8a7f52",
+                    color: "#14110c",
                   }}
                   title={`Low: ${stats.riskBuckets.low}`}
                 >
@@ -225,7 +225,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
               <span className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: "#f87171" }}
+                  style={{ backgroundColor: "#d6503f" }}
                 />
                 <span className="text-muted-foreground">
                   Critical: {stats.riskBuckets.critical}
@@ -234,7 +234,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
               <span className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: "#fbbf24" }}
+                  style={{ backgroundColor: "#d9a441" }}
                 />
                 <span className="text-muted-foreground">
                   High: {stats.riskBuckets.high}
@@ -243,7 +243,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
               <span className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: "#38bdf8" }}
+                  style={{ backgroundColor: "#bf9152" }}
                 />
                 <span className="text-muted-foreground">
                   Medium: {stats.riskBuckets.medium}
@@ -252,7 +252,7 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
               <span className="flex items-center gap-1">
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: "#4ade80" }}
+                  style={{ backgroundColor: "#8a7f52" }}
                 />
                 <span className="text-muted-foreground">
                   Low: {stats.riskBuckets.low}

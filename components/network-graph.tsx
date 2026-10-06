@@ -8,10 +8,10 @@ export interface NetworkGraphHandle {
 }
 
 function riskColor(score: number): string {
-  if (score >= 70) return "#f87171";
-  if (score >= 40) return "#fbbf24";
-  if (score >= 20) return "#38bdf8";
-  return "#4ade80";
+  if (score >= 70) return "#d6503f";
+  if (score >= 40) return "#d9a441";
+  if (score >= 20) return "#bf9152";
+  return "#8a7f52";
 }
 
 function buildGraph(
@@ -319,7 +319,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       if (node.riskScore >= 70) {
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.radius + 2, 0, Math.PI * 2);
-        ctx.strokeStyle = "#f8717180";
+        ctx.strokeStyle = "#d6503f80";
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -366,7 +366,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
 
       // Show IP label on hover
       if (isHovered && node.type !== "asn") {
-        ctx.fillStyle = "#e2e8f0";
+        ctx.fillStyle = "#e8dcc0";
         ctx.font = "bold 10px Geist Mono, monospace";
         const labelWidth = ctx.measureText(node.label).width + 12;
         const lx = node.x - labelWidth / 2;
@@ -378,7 +378,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
         ctx.strokeStyle = node.color + "80";
         ctx.lineWidth = 1;
         ctx.stroke();
-        ctx.fillStyle = "#e2e8f0";
+        ctx.fillStyle = "#e8dcc0";
         ctx.fillText(node.label, node.x, ly + 9);
       }
     }
@@ -551,7 +551,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
           <span className="text-muted-foreground">Domain</span>
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-[#f87171]" />
+          <span className="inline-block h-2 w-2 rounded-full bg-[#d6503f]" />
           <span className="text-muted-foreground">High Risk</span>
         </span>
       </div>

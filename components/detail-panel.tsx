@@ -18,10 +18,10 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 function riskColor(score: number): string {
-  if (score >= 70) return "#f87171"; // red
-  if (score >= 40) return "#fbbf24"; // amber
-  if (score >= 20) return "#38bdf8"; // sky
-  return "#4ade80"; // green
+  if (score >= 70) return "#d6503f"; // red
+  if (score >= 40) return "#d9a441"; // amber
+  if (score >= 20) return "#bf9152"; // sky
+  return "#8a7f52"; // green
 }
 
 function RiskBadge({ score, label }: { score: number; label: string }) {

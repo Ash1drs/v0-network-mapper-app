@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import type { DnsRecord, AsnGroup } from "@/lib/network-types";
 
 const GROUP_COLORS = [
-  "#22d3ee", "#34d399", "#f59e0b", "#f472b6",
-  "#a78bfa", "#fb923c", "#38bdf8", "#4ade80",
-  "#e879f9", "#facc15", "#2dd4bf", "#f87171",
-  "#818cf8", "#a3e635", "#fbbf24", "#c084fc",
+  "#d9b26a", "#c08a4a", "#e0c98a", "#b5723a",
+  "#cbae5e", "#a86a3c", "#ddc38f", "#c99a4a",
+  "#bfa06a", "#e3d0a0", "#a8842e", "#c1743f",
+  "#d4b483", "#9a6b3a", "#cba24e", "#b8935a",
 ];
 
 interface IpApiResponse {
