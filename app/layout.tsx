@@ -12,7 +12,7 @@ const garamond = EB_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: 'Θεία — Relationship Map',
+  title: 'Theia — Infrastructure Link Analysis',
   description: 'Map the relationships between domains, IPs, networks, and the organizations behind them, and trace every connection back to its origin.',
   generator: 'v0.app',
   manifest: '/manifest.json',

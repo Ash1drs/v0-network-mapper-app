@@ -207,10 +207,10 @@ export default function Page() {
               className="font-serif text-2xl font-semibold tracking-wide text-foreground"
               style={{ fontFamily: "var(--font-garamond), 'EB Garamond', serif" }}
             >
-              Θεία
+              Theia
             </h1>
             <span className="mt-1 text-[0.65rem] uppercase tracking-[0.28em] text-muted-foreground">
-              Relationship Map
+              Infrastructure Link Analysis
             </span>
           </div>
         </div>

@@ -132,7 +132,7 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
   doc.setTextColor(ACCENT);
   doc.setFontSize(11);
   doc.setFont("helvetica", "normal");
-  doc.text("Threat Intelligence Relationship Report", margin, 58);
+  doc.text("Infrastructure Link Analysis Report", margin, 58);
   doc.setTextColor("#9aa7b4");
   doc.setFontSize(9);
   doc.text(`Generated ${now.toLocaleString()}`, margin, 72);
@@ -544,7 +544,7 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
     doc.setTextColor(MUTED);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
-    doc.text("Theia — Relationship Map", margin, pageH - 20);
+    doc.text("Theia — Infrastructure Link Analysis", margin, pageH - 20);
     doc.text(`Page ${p} of ${pages}`, pageW - margin, pageH - 20, { align: "right" });
   }
 

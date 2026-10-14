@@ -9,6 +9,7 @@ import {
   FileText,
   X,
   AlertTriangle,
+  Radar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { EntityKind, ThreatGraph } from "@/lib/network-types";
@@ -98,6 +99,36 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
     [addGraph]
   );
 
+  const [otxQuery, setOtxQuery] = useState("");
+  const [otxBusy, setOtxBusy] = useState(false);
+
+  const lookupOtx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const indicator = otxQuery.trim();
+    if (!indicator || otxBusy) return;
+    setParseError(null);
+    setOtxBusy(true);
+    try {
+      const res = await fetch(`/api/otx?indicator=${encodeURIComponent(indicator)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setParseError(data.error || "AlienVault OTX lookup failed.");
+        return;
+      }
+      const name = `OTX · ${data.indicator}`;
+      const { graph, format } = ingest(JSON.stringify({ passive_dns: data.passive_dns }), name);
+      if (addGraph(name, graph, format)) {
+        setOtxQuery("");
+      } else {
+        setParseError(`AlienVault OTX has no passive DNS history for "${data.indicator}".`);
+      }
+    } catch {
+      setParseError("Couldn't reach AlienVault OTX. Try again in a moment.");
+    } finally {
+      setOtxBusy(false);
+    }
+  };
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -179,6 +210,40 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
         onChange={handleFileSelect}
         className="hidden"
       />
+
+      <form onSubmit={lookupOtx} className="flex flex-col gap-1.5">
+        <label
+          htmlFor="otx-indicator"
+          className="text-xs uppercase tracking-wider text-muted-foreground"
+        >
+          Pull from AlienVault OTX
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="otx-indicator"
+            type="text"
+            value={otxQuery}
+            onChange={(e) => setOtxQuery(e.target.value)}
+            placeholder="IP, domain, or hostname"
+            autoComplete="off"
+            spellCheck={false}
+            className="min-h-[44px] flex-1 rounded-md border border-border bg-input px-3 font-mono text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={otxBusy || !otxQuery.trim()}
+            className="min-h-[44px] gap-1.5 border-border text-xs text-foreground hover:bg-secondary"
+          >
+            {otxBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Radar className="h-3.5 w-3.5 text-primary" />
+            )}
+            Add
+          </Button>
+        </div>
+      </form>
 
       {/* Extracting indicator */}
       {busyFile && (
