@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
         ips: Array.from(data.ips),
         domains: Array.from(data.domains),
         records: data.records,
-        maxRiskScore: data.riskScores.length > 0 ? Math.max(...data.riskScores) : 0,
+        maxRiskScore: data.riskScores.reduce((max, s) => (s > max ? s : max), 0),
         avgRiskScore: data.riskScores.length > 0 ? Math.round(data.riskScores.reduce((a, b) => a + b, 0) / data.riskScores.length) : 0,
         totalCount: data.totalCount,
         color: GROUP_COLORS[colorIndex++ % GROUP_COLORS.length],

@@ -78,7 +78,7 @@ function buildGraph(
       const iy = hubY + Math.sin(ipAngle) * ringRadius;
 
       const ipRecords = group.records.filter((r) => r.answer === ip);
-      const ipRisk = ipRecords.length > 0 ? Math.max(...ipRecords.map((r) => r.answer_risk_score)) : 0;
+      const ipRisk = ipRecords.reduce((max, r) => (r.answer_risk_score > max ? r.answer_risk_score : max), 0);
 
       nodes.push({
         id: ipId,

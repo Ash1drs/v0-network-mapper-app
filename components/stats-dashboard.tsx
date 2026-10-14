@@ -57,13 +57,21 @@ export function StatsDashboard({ groups, allRecords }: StatsDashboardProps) {
       .slice(0, 5);
 
     // Timeline stats
-    const dates = allRecords
-      .flatMap((r) => [r.first_seen, r.last_seen])
-      .filter((d) => d)
-      .map((d) => new Date(d).getTime())
-      .filter((t) => !isNaN(t));
-    const minDate = dates.length > 0 ? new Date(Math.min(...dates)) : null;
-    const maxDate = dates.length > 0 ? new Date(Math.max(...dates)) : null;
+    // Single pass instead of spreading into Math.min/max, which overflows the
+    // call stack on large uploads.
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+    for (const r of allRecords) {
+      for (const d of [r.first_seen, r.last_seen]) {
+        if (!d) continue;
+        const t = new Date(d).getTime();
+        if (isNaN(t)) continue;
+        if (t < minTime) minTime = t;
+        if (t > maxTime) maxTime = t;
+      }
+    }
+    const minDate = minTime !== Infinity ? new Date(minTime) : null;
+    const maxDate = maxTime !== -Infinity ? new Date(maxTime) : null;
 
     // Total observations
     const totalObservations = allRecords.reduce((sum, r) => sum + r.count, 0);
