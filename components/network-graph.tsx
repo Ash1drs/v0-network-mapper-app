@@ -26,26 +26,22 @@ function buildGraph(
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
 
-  const n = groups.length;
-  if (n === 0) return { nodes, edges };
+  if (groups.length === 0) return { nodes, edges };
+  void selectedAsn;
 
-  // Lay ASN clusters out on a grid that fills the canvas, so clusters stay
-  // separated instead of collapsing into one blob.
-  const cols = Math.ceil(Math.sqrt(n * (width / Math.max(height, 1))));
-  const rows = Math.ceil(n / cols);
-  const cellW = width / cols;
-  const cellH = height / rows;
-  // Radius available for a cluster's IP rings within its cell
-  const clusterRadius = Math.min(cellW, cellH) * 0.34;
+  const cx = width / 2;
+  const cy = height / 2;
+  // Spread ASN hubs evenly around a large ring for a stable starting layout
+  const asnRingRadius = Math.min(width, height) * 0.35;
 
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
-    const col = gi % cols;
-    const row = Math.floor(gi / cols);
-    const hubX = cellW * (col + 0.5);
-    const hubY = cellH * (row + 0.5);
-
+    // ASN hub node
     const asnId = `asn-${group.asn}`;
+    const angle = (gi / groups.length) * Math.PI * 2 - Math.PI / 2;
+    const dist = asnRingRadius + (Math.random() - 0.5) * 30;
+    const hubX = cx + Math.cos(angle) * dist;
+    const hubY = cy + Math.sin(angle) * dist;
     nodes.push({
       id: asnId,
       label: group.asName.length > 24 ? group.asName.slice(0, 22) + "..." : group.asName,
@@ -56,26 +52,20 @@ function buildGraph(
       vy: 0,
       homeX: hubX,
       homeY: hubY,
-      radius: Math.min(12 + Math.sqrt(group.ips.length) * 3, 30),
+      radius: Math.min(14 + group.ips.length * 2, 36),
       color: group.color,
       riskScore: group.maxRiskScore,
       asnGroup: group,
     });
 
-    const isSelected = selectedAsn === group.asn;
-
-    // IP nodes arranged in concentric rings around the hub
-    const ipCount = group.ips.length;
-    const perRing = Math.max(6, Math.ceil(Math.sqrt(ipCount) * 2));
-    for (let i = 0; i < ipCount; i++) {
+    // IP nodes radiating from ASN
+    for (let i = 0; i < group.ips.length; i++) {
       const ip = group.ips[i];
       const ipId = `ip-${ip}`;
-      const ring = Math.floor(i / perRing) + 1;
-      const idxInRing = i % perRing;
-      const ringRadius = (clusterRadius * ring) / (Math.ceil(ipCount / perRing) + 0.5);
-      const ipAngle = (idxInRing / perRing) * Math.PI * 2 + ring * 0.6;
-      const ix = hubX + Math.cos(ipAngle) * ringRadius;
-      const iy = hubY + Math.sin(ipAngle) * ringRadius;
+      const ipAngle = angle + ((i / group.ips.length) * Math.PI * 2) / groups.length - Math.PI / groups.length;
+      const ipDist = 40 + Math.random() * 60;
+      const ix = hubX + Math.cos(ipAngle) * ipDist;
+      const iy = hubY + Math.sin(ipAngle) * ipDist;
 
       const ipRecords = group.records.filter((r) => r.answer === ip);
       const ipRisk = ipRecords.reduce((max, r) => (r.answer_risk_score > max ? r.answer_risk_score : max), 0);
@@ -90,7 +80,7 @@ function buildGraph(
         vy: 0,
         homeX: ix,
         homeY: iy,
-        radius: 6,
+        radius: 8,
         color: group.color,
         riskScore: ipRisk,
         parentId: asnId,
@@ -98,38 +88,38 @@ function buildGraph(
 
       edges.push({ source: asnId, target: ipId, color: group.color });
 
-      // Domain nodes only for the SELECTED cluster (keeps the map readable)
-      if (isSelected) {
-        const uniqueDomains = [...new Set(ipRecords.map((r) => r.query).filter(Boolean))].slice(0, 4);
-        for (let d = 0; d < uniqueDomains.length; d++) {
-          const domain = uniqueDomains[d];
-          const domainId = `dom-${domain}-${ip}`;
-          const domAngle = ipAngle + (d - uniqueDomains.length / 2) * 0.5;
-          const domDist = 22;
-          const dx = ix + Math.cos(domAngle) * domDist;
-          const dy = iy + Math.sin(domAngle) * domDist;
-          const domRecord = ipRecords.find((r) => r.query === domain);
-          const domRisk = domRecord?.query_risk_score ?? 0;
+      // Domain nodes branching from IPs (limit to avoid overload)
+      const uniqueDomains = [...new Set(ipRecords.map((r) => r.query).filter(Boolean))].slice(0, 3);
 
-          nodes.push({
-            id: domainId,
-            label: domain.length > 20 ? domain.slice(0, 18) + "..." : domain,
-            type: "domain",
-            x: dx,
-            y: dy,
-            vx: 0,
-            vy: 0,
-            homeX: dx,
-            homeY: dy,
-            radius: 4,
-            color: riskColor(domRisk),
-            riskScore: domRisk,
-            parentId: ipId,
-            data: domRecord,
-          });
+      for (let d = 0; d < uniqueDomains.length; d++) {
+        const domain = uniqueDomains[d];
+        const domainId = `dom-${domain}-${ip}`;
+        const domAngle = ipAngle + (d - uniqueDomains.length / 2) * 0.4;
+        const domDist = 25 + Math.random() * 20;
+        const dx = ix + Math.cos(domAngle) * domDist;
+        const dy = iy + Math.sin(domAngle) * domDist;
 
-          edges.push({ source: ipId, target: domainId, color: group.color + "60" });
-        }
+        const domRecord = ipRecords.find((r) => r.query === domain);
+        const domRisk = domRecord?.query_risk_score ?? 0;
+
+        nodes.push({
+          id: domainId,
+          label: domain.length > 20 ? domain.slice(0, 18) + "..." : domain,
+          type: "domain",
+          x: dx,
+          y: dy,
+          vx: 0,
+          vy: 0,
+          homeX: dx,
+          homeY: dy,
+          radius: 5,
+          color: riskColor(domRisk),
+          riskScore: domRisk,
+          parentId: ipId,
+          data: domRecord,
+        });
+
+        edges.push({ source: ipId, target: domainId, color: group.color + "60" });
       }
     }
   }
@@ -152,44 +142,62 @@ function isSimSettled() {
 
 function simulateForces(
   nodes: GraphNode[],
-  _edges: GraphEdge[],
+  edges: GraphEdge[],
   width: number,
   height: number
 ) {
   if (simTemperature < SIM_MIN_TEMP) return;
 
-  const HOME_SPRING = 0.08; // pull each node toward its computed home
-  const COLLISION = 0.5; // how hard overlapping nodes push apart
-  const DAMPING = 0.75;
+  const REPULSION = 2000;
+  const ATTRACTION = 0.01;
+  const DAMPING = 0.55;
+  const CENTER_GRAVITY = 0.008;
   const temp = simTemperature;
 
-  // Short-range collision resolution so nodes don't overlap.
-  // Skip domains against domains to keep it cheap on large graphs.
+  const cx = width / 2;
+  const cy = height / 2;
+
+  // Repulsion between ASN and IP nodes only (skip domain-to-domain)
   for (let i = 0; i < nodes.length; i++) {
-    const a = nodes[i];
+    if (nodes[i].type === "domain") continue;
     for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j];
-      if (a.type === "domain" && b.type === "domain") continue;
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
-      const minDist = a.radius + b.radius + 4;
+      if (nodes[j].type === "domain") continue;
+      const dx = nodes[i].x - nodes[j].x;
+      const dy = nodes[i].y - nodes[j].y;
       const distSq = dx * dx + dy * dy;
-      if (distSq >= minDist * minDist || distSq === 0) continue;
-      const dist = Math.sqrt(distSq) || 1;
-      const overlap = (minDist - dist) / dist;
-      const fx = dx * overlap * COLLISION;
-      const fy = dy * overlap * COLLISION;
-      a.vx += fx;
-      a.vy += fy;
-      b.vx -= fx;
-      b.vy -= fy;
+      const dist = Math.max(Math.sqrt(distSq), 1);
+      const force = (REPULSION * temp) / (dist * dist);
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      nodes[i].vx += fx;
+      nodes[i].vy += fy;
+      nodes[j].vx -= fx;
+      nodes[j].vy -= fy;
     }
   }
 
+  // Attraction along edges -- this is what pulls related nodes together
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  for (const edge of edges) {
+    const source = nodeMap.get(edge.source);
+    const target = nodeMap.get(edge.target);
+    if (!source || !target) continue;
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    const idealDist = source.type === "asn" || target.type === "asn" ? 80 : 35;
+    const force = (dist - idealDist) * ATTRACTION * temp;
+    const fx = (dx / dist) * force;
+    const fy = (dy / dist) * force;
+    source.vx += fx;
+    source.vy += fy;
+    target.vx -= fx;
+    target.vy -= fy;
+  }
+
   for (const node of nodes) {
-    // Spring back toward home anchor
-    node.vx += (node.homeX - node.x) * HOME_SPRING;
-    node.vy += (node.homeY - node.y) * HOME_SPRING;
+    node.vx += (cx - node.x) * CENTER_GRAVITY * temp;
+    node.vy += (cy - node.y) * CENTER_GRAVITY * temp;
     node.vx *= DAMPING;
     node.vy *= DAMPING;
     node.x += node.vx;
@@ -358,7 +366,10 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
         ctx.fillStyle = node.color + "bb";
         ctx.font = "10px Geist, sans-serif";
         ctx.fillText(
-          `AS${node.asnGroup?.asn || "?"}`,
+          (() => {
+            const asn = node.asnGroup?.asn || "?";
+            return /^as/i.test(asn) ? asn.toUpperCase() : `AS${asn}`;
+          })(),
           node.x,
           node.y + node.radius + 12
         );
