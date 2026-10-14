@@ -16,7 +16,17 @@ import {
   signalCounts,
   type Signal,
 } from "@/lib/signals";
-import { ChevronDown, ChevronUp, ImageDown, FileDown, Orbit, Palette } from "lucide-react";
+import Link from "next/link";
+import { SaveReportDialog } from "@/components/save-report-dialog";
+import {
+  ChevronDown,
+  ChevronUp,
+  ImageDown,
+  FileDown,
+  FolderOpen,
+  Orbit,
+  Palette,
+} from "lucide-react";
 
 export type ColorMode = "feed" | "zone" | "category";
 
@@ -214,9 +224,18 @@ export default function Page() {
             </span>
           </div>
         </div>
-        <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
-          Match &middot; Overlap &middot; Pivot &middot; Sequence
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="hidden font-mono text-xs text-muted-foreground md:inline">
+            Match &middot; Overlap &middot; Pivot &middot; Sequence
+          </span>
+          <Link
+            href="/reports"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+          >
+            <FolderOpen className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+            Saved reports
+          </Link>
+        </div>
       </header>
 
       <div className="flex flex-1 flex-col lg:flex-row lg:min-h-0 lg:overflow-hidden">
@@ -306,6 +325,14 @@ export default function Page() {
                 <ImageDown className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">PNG</span>
               </button>
+              <SaveReportDialog
+                disabled={!canExport}
+                getSnapshot={() => ({
+                  graph: filteredGraph,
+                  feedOrder,
+                  stats: reportStats(filteredGraph),
+                })}
+              />
               <button
                 type="button"
                 onClick={handleExportPdf}
