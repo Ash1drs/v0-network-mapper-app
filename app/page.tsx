@@ -9,7 +9,14 @@ import type { Entity, EntityKind, ThreatGraph, Zone } from "@/lib/network-types"
 import { ZONE_ORDER } from "@/lib/network-types";
 import { applyZones, zoneCounts, bridgeCount, type ZoneOverrides } from "@/lib/zones";
 import { exportPng, canvasToPng, generatePdfReport, type ReportStats } from "@/lib/report";
-import { Activity, ChevronDown, ChevronUp, ImageDown, FileDown, Palette } from "lucide-react";
+import {
+  buildSignals,
+  hasSignal,
+  isCertAuthority,
+  signalCounts,
+  type Signal,
+} from "@/lib/signals";
+import { ChevronDown, ChevronUp, ImageDown, FileDown, Orbit, Palette } from "lucide-react";
 
 export type ColorMode = "feed" | "zone" | "category";
 
@@ -26,8 +33,8 @@ export interface GraphFilterState {
   kinds: Set<EntityKind>;
   feeds: Set<string>;
   zones: Set<Zone>;
-  matchedOnly: boolean;
-  pivotsOnly: boolean;
+  signals: Set<Signal>;
+  showCA: boolean;
 }
 
 const EMPTY_GRAPH: ThreatGraph = { entities: [], relationships: [] };
@@ -46,8 +53,8 @@ export default function Page() {
     kinds: new Set(),
     feeds: new Set(),
     zones: new Set(),
-    matchedOnly: false,
-    pivotsOnly: false,
+    signals: new Set(),
+    showCA: false,
   });
   const graphRef = useRef<NetworkGraphHandle>(null);
 
@@ -83,8 +90,8 @@ export default function Page() {
         kinds: new Set(Object.keys(data.stats.byKind) as EntityKind[]),
         feeds: new Set(data.feedOrder as string[]),
         zones: new Set(ZONE_ORDER),
-        matchedOnly: false,
-        pivotsOnly: false,
+        signals: new Set(),
+        showCA: false,
       });
     } catch {
       setError("Failed to analyze data");
@@ -105,6 +112,16 @@ export default function Page() {
     [zonedGraph],
   );
 
+  const signalIndex = useMemo(() => buildSignals(zonedGraph), [zonedGraph]);
+
+  const signalStats = useMemo(() => {
+    let caHidden = 0;
+    for (const e of zonedGraph.entities) {
+      if (!e.matched && isCertAuthority(e)) caHidden++;
+    }
+    return { counts: signalCounts(signalIndex), caHidden };
+  }, [zonedGraph, signalIndex]);
+
   // Apply live filters to the zoned graph.
   const filteredGraph = useMemo<ThreatGraph>(() => {
     if (zonedGraph.entities.length === 0) return EMPTY_GRAPH;
@@ -113,8 +130,13 @@ export default function Page() {
       if (filters.kinds.size && !filters.kinds.has(e.kind)) return false;
       if (filters.feeds.size && !e.feeds.some((f) => filters.feeds.has(f))) return false;
       if (filters.zones.size && !filters.zones.has(e.zone ?? "unknown")) return false;
-      if (filters.matchedOnly && !e.matched) return false;
-      if (filters.pivotsOnly && !e.isBridge) return false;
+      if (!filters.showCA && !e.matched && isCertAuthority(e)) return false;
+      if (filters.signals.size) {
+        const s = signalIndex.get(e.id);
+        let any = false;
+        for (const sig of filters.signals) if (hasSignal(s, sig)) any = true;
+        if (!any) return false;
+      }
       keep.add(e.id);
       return true;
     });
@@ -122,7 +144,7 @@ export default function Page() {
       (r) => keep.has(r.source) && keep.has(r.target),
     );
     return { entities, relationships };
-  }, [zonedGraph, filters]);
+  }, [zonedGraph, filters, signalIndex]);
 
   // Keep the selected entity in sync with recomputed zone/bridge state.
   const selectedZoned = useMemo(
@@ -139,7 +161,7 @@ export default function Page() {
     const parentBg = canvas.parentElement
       ? getComputedStyle(canvas.parentElement).backgroundColor
       : "";
-    return parentBg && parentBg !== "rgba(0, 0, 0, 0)" ? parentBg : "#0f1420";
+    return parentBg && parentBg !== "rgba(0, 0, 0, 0)" ? parentBg : "#232325";
   };
 
   // Stats for the report reflect exactly what's visible (post-filter).
@@ -178,12 +200,22 @@ export default function Page() {
   return (
     <main className="flex min-h-dvh flex-col bg-background lg:h-dvh lg:overflow-hidden">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <Activity className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-bold tracking-tight text-foreground font-mono">NetMap</h1>
+        <div className="flex items-center gap-3">
+          <Orbit className="h-6 w-6 text-primary" aria-hidden="true" />
+          <div className="flex flex-col leading-none">
+            <h1
+              className="font-serif text-2xl font-semibold tracking-wide text-foreground"
+              style={{ fontFamily: "var(--font-garamond), 'EB Garamond', serif" }}
+            >
+              Θεία
+            </h1>
+            <span className="mt-1 text-[0.65rem] uppercase tracking-[0.28em] text-muted-foreground">
+              Relationship Map
+            </span>
+          </div>
         </div>
-        <span className="text-xs font-mono text-muted-foreground hidden sm:inline">
-          Threat Intel Relationship Mapper
+        <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+          Match &middot; Overlap &middot; Pivot &middot; Sequence
         </span>
       </header>
 
@@ -221,14 +253,15 @@ export default function Page() {
                 byKind={stats.byKind}
                 filters={filters}
                 onChange={setFilters}
-                matchedCount={stats.matchedEntities}
+                signalCountsMap={signalStats.counts}
+                caHiddenCount={signalStats.caHidden}
                 zoneCountsMap={zoneStats.counts}
-                pivotCount={zoneStats.pivots}
               />
             )}
 
             <DetailPanel
               graph={zonedGraph}
+              signals={signalIndex}
               feedOrder={feedOrder}
               colorMode={colorMode}
               selected={selectedZoned}

@@ -34,6 +34,8 @@ import {
   type Zone,
 } from "@/lib/network-types";
 import type { ColorMode } from "@/app/page";
+import type { SignalIndex } from "@/lib/signals";
+import { SignalBreakdown } from "@/components/signal-breakdown";
 import { GitBranch, ShieldAlert } from "lucide-react";
 
 function riskColor(score: number): string {
@@ -60,6 +62,7 @@ function KindIcon({ kind, className }: { kind: EntityKind; className?: string })
 
 interface DetailPanelProps {
   graph: ThreatGraph;
+  signals: SignalIndex;
   feedOrder: string[];
   colorMode: ColorMode;
   selected: Entity | null;
@@ -69,6 +72,7 @@ interface DetailPanelProps {
 
 export function DetailPanel({
   graph,
+  signals,
   feedOrder,
   colorMode,
   selected,
@@ -177,6 +181,14 @@ export function DetailPanel({
               </span>
             )}
           </div>
+
+          <SignalBreakdown
+            signals={signals.get(selected.id)}
+            onJump={(id) => {
+              const target = byId.get(id);
+              if (target) onSelect(target);
+            }}
+          />
 
           {/* Environment zone — auto-classified, manually overridable */}
           <div className="mb-3">

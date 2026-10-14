@@ -29,9 +29,9 @@ interface ReportInput {
 }
 
 // Theme accents (hex) used across the PDF.
-const INK = "#0f1420";
+const INK = "#232325";
 const ACCENT = "#22b8cf";
-const MATCH = "#ec4899";
+const MATCH = "#d4af37";
 const MUTED = "#64748b";
 const LIGHT = "#eef2f6";
 
@@ -45,7 +45,7 @@ export function canvasToPng(source: HTMLCanvasElement, background: string): stri
   out.height = source.height;
   const ctx = out.getContext("2d");
   if (!ctx) return null;
-  ctx.fillStyle = background || "#0f1420";
+  ctx.fillStyle = background || "#232325";
   ctx.fillRect(0, 0, out.width, out.height);
   ctx.drawImage(source, 0, 0);
   return out.toDataURL("image/png");
@@ -128,7 +128,7 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
   doc.setTextColor("#ffffff");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(20);
-  doc.text("NetMap", margin, 40);
+  doc.text("Theia", margin, 40);
   doc.setTextColor(ACCENT);
   doc.setFontSize(11);
   doc.setFont("helvetica", "normal");
@@ -544,7 +544,7 @@ export function generatePdfReport({ graph, feedOrder, stats, graphImage }: Repor
     doc.setTextColor(MUTED);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
-    doc.text("NetMap — Threat Intel Relationship Mapper", margin, pageH - 20);
+    doc.text("Theia — Relationship Map", margin, pageH - 20);
     doc.text(`Page ${p} of ${pages}`, pageW - margin, pageH - 20, { align: "right" });
   }
 

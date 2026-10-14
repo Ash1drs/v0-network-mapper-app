@@ -261,13 +261,13 @@ export function UploadPanel({ onAnalyze, isLoading, stats }: UploadPanelProps) {
           <div
             className="rounded-md border px-3 py-2 text-center"
             style={{
-              borderColor: "var(--match-color, #ec4899)55",
-              backgroundColor: "var(--match-color, #ec4899)10",
+              borderColor: "var(--match-color, #d4af37)55",
+              backgroundColor: "var(--match-color, #d4af37)10",
             }}
           >
             <div
               className="text-lg font-bold font-mono"
-              style={{ color: "var(--match-color, #ec4899)" }}
+              style={{ color: "var(--match-color, #d4af37)" }}
             >
               {stats.matchedEntities.toLocaleString()}
             </div>

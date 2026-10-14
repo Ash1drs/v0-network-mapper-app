@@ -1,9 +1,9 @@
 {
-  "name": "NetMap - Network Intelligence Mapper",
-  "short_name": "NetMap",
-  "description": "Visualize IP networks and map CIDR blocks",
+  "name": "Θεία — Relationship Map",
+  "short_name": "Θεία",
+  "description": "Map the relationships between domains, IPs, networks, and the organizations behind them.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#1a1a2e"
+  "background_color": "#0d0b08",
+  "theme_color": "#0d0b08"
 }

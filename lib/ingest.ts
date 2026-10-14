@@ -530,8 +530,16 @@ function parseGenericRows(rows: any[], gb: GraphBuilder) {
     const asn = normalizeAsn(pick(row, ASN_KEYS));
     const asName = pick(row, ASNAME_KEYS) ? String(pick(row, ASNAME_KEYS)) : "";
     const risk = clampRisk(Number(pick(row, ["answer_risk_score", "query_risk_score", "risk", "score"])) || 0);
+    const firstSeenRaw = pick(row, ["first_seen", "firstSeen", "first", "date", "timestamp"]);
+    const lastSeenRaw = pick(row, ["last_seen", "lastSeen", "last"]);
     if (domain || ip) {
-      gb.addResolution(domain ? String(domain) : "", ip ? String(ip) : "", { asn, asName, risk });
+      gb.addResolution(domain ? String(domain) : "", ip ? String(ip) : "", {
+        asn,
+        asName,
+        risk,
+        firstSeen: firstSeenRaw ? String(firstSeenRaw) : undefined,
+        lastSeen: lastSeenRaw ? String(lastSeenRaw) : undefined,
+      });
     }
     if (hash) gb.addEntity("hash", String(hash));
     if (url) gb.addEntity("url", String(url));

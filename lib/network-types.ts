@@ -276,18 +276,18 @@ export function categoryColor(cat: Category): string {
 // ---- Color system for feed vs. match coding ----
 
 // One color means "this entity appears in more than one feed" (a match).
-export const MATCH_COLOR = "#ec4899"; // magenta/pink — reserved for matches
+export const MATCH_COLOR = "#d4af37"; // antique gold — reserved for matches
 
 // Distinct per-feed palette (no pink — that's reserved for matches; no purple).
 export const FEED_COLORS = [
-  "#22d3ee", // cyan
-  "#4ade80", // green
-  "#f59e0b", // amber
-  "#38bdf8", // sky
-  "#2dd4bf", // teal
-  "#a3e635", // lime
-  "#fb923c", // orange
-  "#facc15", // yellow
+  "#e8dcc0", // ivory
+  "#6f9e8f", // verdigris
+  "#b08d57", // bronze
+  "#7f93a8", // pewter blue
+  "#8f9a6a", // sage
+  "#b87a5e", // copper
+  "#a8924a", // brass
+  "#9c7f8f", // mauve
 ];
 
 export function feedColor(feedIndex: number): string {
@@ -307,15 +307,15 @@ export function entityColor(
 // ---- Zone (environment) color + label system ----
 
 // A distinct near-white halo marks pivot/bridge nodes regardless of color mode.
-export const BRIDGE_COLOR = "#f1f5f9";
+export const BRIDGE_COLOR = "#f3ead2";
 
 export const ZONE_ORDER: Zone[] = ["personal", "corporate", "adversary", "unknown"];
 
 export const ZONE_COLOR: Record<Zone, string> = {
-  personal: "#38bdf8", // sky
-  corporate: "#f59e0b", // amber
-  adversary: "#f87171", // red
-  unknown: "#64748b", // slate
+  personal: "#7f93a8", // pewter blue
+  corporate: "#c9a45c", // antique gold
+  adversary: "#b5523b", // oxblood
+  unknown: "#6b6b6b", // charcoal gray
 };
 
 export const ZONE_LABEL: Record<Zone, string> = {

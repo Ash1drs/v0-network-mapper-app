@@ -1,11 +1,10 @@
 "use client";
 
-import { Filter, Sparkles, GitBranch } from "lucide-react";
+import { Filter, Sparkles, GitBranch, Waypoints, History, ShieldOff } from "lucide-react";
 import type { GraphFilterState } from "@/app/page";
 import {
   ENTITY_KIND_LABEL,
   MATCH_COLOR,
-  BRIDGE_COLOR,
   ZONE_COLOR,
   ZONE_LABEL,
   ZONE_ORDER,
@@ -13,15 +12,29 @@ import {
   type EntityKind,
   type Zone,
 } from "@/lib/network-types";
+import {
+  SIGNAL_COLOR,
+  SIGNAL_DESC,
+  SIGNAL_LABEL,
+  SIGNAL_ORDER,
+  type Signal,
+} from "@/lib/signals";
+
+export const SIGNAL_ICON: Record<Signal, typeof Sparkles> = {
+  match: Sparkles,
+  overlap: Waypoints,
+  pivot: GitBranch,
+  sequence: History,
+};
 
 interface GraphFiltersProps {
   feedOrder: string[];
   byKind: Record<EntityKind, number>;
   filters: GraphFilterState;
   onChange: (filters: GraphFilterState) => void;
-  matchedCount: number;
+  signalCountsMap: Record<Signal, number>;
+  caHiddenCount: number;
   zoneCountsMap: Record<Zone, number>;
-  pivotCount: number;
 }
 
 export function GraphFilters({
@@ -29,9 +42,9 @@ export function GraphFilters({
   byKind,
   filters,
   onChange,
-  matchedCount,
+  signalCountsMap,
+  caHiddenCount,
   zoneCountsMap,
-  pivotCount,
 }: GraphFiltersProps) {
   const kinds = Object.keys(byKind) as EntityKind[];
 
@@ -42,8 +55,11 @@ export function GraphFilters({
     onChange({ ...filters, zones: next });
   };
 
-  const setPivotsOnly = (value: boolean) => {
-    onChange({ ...filters, pivotsOnly: value });
+  const toggleSignal = (sig: Signal) => {
+    const next = new Set(filters.signals);
+    if (next.has(sig)) next.delete(sig);
+    else next.add(sig);
+    onChange({ ...filters, signals: next });
   };
 
   const toggleKind = (kind: EntityKind) => {
@@ -60,10 +76,6 @@ export function GraphFilters({
     onChange({ ...filters, feeds: next });
   };
 
-  const setMatchedOnly = (value: boolean) => {
-    onChange({ ...filters, matchedOnly: value });
-  };
-
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -71,55 +83,66 @@ export function GraphFilters({
         <h2 className="text-sm font-semibold text-foreground">Filters</h2>
       </div>
 
-      {/* Matched-only toggle */}
+      {/* Relationship signals — show only entities carrying the chosen signal(s) */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-muted-foreground">
+          Relationship signal {filters.signals.size > 1 ? "(any selected)" : ""}
+        </span>
+        <div className="flex flex-col gap-1">
+          {SIGNAL_ORDER.map((sig) => {
+            const active = filters.signals.has(sig);
+            const color = SIGNAL_COLOR[sig];
+            const Icon = SIGNAL_ICON[sig];
+            return (
+              <button
+                key={sig}
+                type="button"
+                aria-pressed={active}
+                onClick={() => toggleSignal(sig)}
+                className="flex items-center gap-2.5 rounded-md border px-2.5 py-1.5 text-left transition-colors min-h-[44px]"
+                style={{
+                  borderColor: active ? color : "var(--border)",
+                  backgroundColor: active ? color + "14" : "transparent",
+                }}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} aria-hidden="true" />
+                <span className="flex flex-1 flex-col overflow-hidden">
+                  <span className="text-xs font-medium text-foreground">{SIGNAL_LABEL[sig]}</span>
+                  <span className="truncate text-[11px] text-muted-foreground">{SIGNAL_DESC[sig]}</span>
+                </span>
+                <span
+                  className="rounded-full px-1.5 py-0.5 text-xs font-mono font-bold"
+                  style={{ backgroundColor: color + "22", color }}
+                >
+                  {signalCountsMap[sig]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Certificate-authority noise */}
       <button
         type="button"
-        onClick={() => setMatchedOnly(!filters.matchedOnly)}
-        className="flex items-center justify-between rounded-md border px-3 py-2 transition-colors min-h-[44px]"
-        style={{
-          borderColor: filters.matchedOnly ? MATCH_COLOR : "var(--border)",
-          backgroundColor: filters.matchedOnly ? MATCH_COLOR + "14" : "transparent",
-        }}
+        role="switch"
+        aria-checked={filters.showCA}
+        onClick={() => onChange({ ...filters, showCA: !filters.showCA })}
+        className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-left transition-colors hover:bg-secondary/40 min-h-[44px]"
       >
         <span className="flex items-center gap-2">
-          <Sparkles
-            className="h-3.5 w-3.5"
-            style={{ color: filters.matchedOnly ? MATCH_COLOR : undefined }}
-          />
-          <span
-            className="text-xs font-medium"
-            style={{ color: filters.matchedOnly ? MATCH_COLOR : "var(--foreground)" }}
-          >
-            Cross-feed matches only
+          <ShieldOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="flex flex-col">
+            <span className="text-xs font-medium text-foreground">
+              {filters.showCA ? "Showing CA hosts" : "CA hosts hidden"}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              OCSP / CRL / issuer noise, unless matched
+            </span>
           </span>
         </span>
-        <span
-          className="rounded-full px-1.5 py-0.5 text-xs font-mono font-bold"
-          style={{ backgroundColor: MATCH_COLOR + "22", color: MATCH_COLOR }}
-        >
-          {matchedCount}
-        </span>
-      </button>
-
-      {/* Pivots-only toggle — nodes that bridge two environments */}
-      <button
-        type="button"
-        onClick={() => setPivotsOnly(!filters.pivotsOnly)}
-        className="flex items-center justify-between rounded-md border px-3 py-2 transition-colors min-h-[44px]"
-        style={{
-          borderColor: filters.pivotsOnly ? BRIDGE_COLOR : "var(--border)",
-          backgroundColor: filters.pivotsOnly ? BRIDGE_COLOR + "14" : "transparent",
-        }}
-      >
-        <span className="flex items-center gap-2">
-          <GitBranch className="h-3.5 w-3.5" style={{ color: filters.pivotsOnly ? BRIDGE_COLOR : undefined }} />
-          <span className="text-xs font-medium text-foreground">Pivot points only</span>
-        </span>
-        <span
-          className="rounded-full px-1.5 py-0.5 text-xs font-mono font-bold"
-          style={{ backgroundColor: BRIDGE_COLOR + "22", color: BRIDGE_COLOR }}
-        >
-          {pivotCount}
+        <span className="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+          {caHiddenCount}
         </span>
       </button>
 

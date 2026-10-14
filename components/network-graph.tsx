@@ -416,7 +416,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       if (e.isAnchor) {
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.radius + 7, 0, Math.PI * 2);
-        ctx.strokeStyle = "#fbbf24";
+        ctx.strokeStyle = "#d4af37";
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -476,7 +476,7 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
         ctx.strokeStyle = node.color + "cc";
         ctx.lineWidth = 1;
         ctx.stroke();
-        ctx.fillStyle = "#e2e8f0";
+        ctx.fillStyle = "#efe6cf";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(label, node.x, ly + 9);
