@@ -67,6 +67,18 @@ function clampRisk(n: number): number {
 // Graph builder — accumulates entities + relationships for a single feed
 // ---------------------------------------------------------------------------
 
+function pickByTime(a: string | undefined, b: string | undefined, wantEarlier: boolean): string | undefined {
+  if (!a) return b || undefined;
+  if (!b) return a;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(tb)) return a;
+  if (Number.isNaN(ta)) return b;
+  return wantEarlier ? (tb < ta ? b : a) : tb > ta ? b : a;
+}
+const earliest = (a?: string, b?: string) => pickByTime(a, b, true);
+const latest = (a?: string, b?: string) => pickByTime(a, b, false);
+
 class GraphBuilder {
   private entities = new Map<string, Entity>();
   private rels = new Map<string, Relationship>();
@@ -75,18 +87,20 @@ class GraphBuilder {
   addEntity(
     kind: EntityKind,
     rawValue: string,
-    extra: Partial<Pick<Entity, "riskScore" | "asn" | "asName" | "firstSeen" | "lastSeen">> = {},
+    extra: Partial<Pick<Entity, "riskScore" | "asn" | "asName" | "firstSeen" | "lastSeen" | "seenCount">> = {},
   ): string | null {
     const value = (rawValue ?? "").trim();
     if (!value) return null;
     const id = entityId(kind, value);
+    const sightings = extra.seenCount && extra.seenCount > 0 ? Math.floor(extra.seenCount) : 1;
     const existing = this.entities.get(id);
     if (existing) {
       if (extra.riskScore) existing.riskScore = Math.max(existing.riskScore, clampRisk(extra.riskScore));
       if (extra.asn && !existing.asn) existing.asn = extra.asn;
       if (extra.asName && !existing.asName) existing.asName = extra.asName;
-      if (extra.firstSeen && !existing.firstSeen) existing.firstSeen = extra.firstSeen;
-      if (extra.lastSeen && !existing.lastSeen) existing.lastSeen = extra.lastSeen;
+      existing.firstSeen = earliest(existing.firstSeen, extra.firstSeen);
+      existing.lastSeen = latest(existing.lastSeen, extra.lastSeen);
+      existing.seenCount = (existing.seenCount ?? 0) + sightings;
       return id;
     }
     const rec = recognizeValue(kind, value);
@@ -98,8 +112,9 @@ class GraphBuilder {
       riskScore: clampRisk(extra.riskScore ?? 0),
       asn: extra.asn,
       asName: extra.asName,
-      firstSeen: extra.firstSeen,
-      lastSeen: extra.lastSeen,
+      firstSeen: extra.firstSeen || undefined,
+      lastSeen: extra.lastSeen || undefined,
+      seenCount: sightings,
       category: rec.category,
       subtype: rec.subtype,
     });
@@ -114,12 +129,17 @@ class GraphBuilder {
   }
 
   // Convenience: a domain that resolves to an IP, optionally within an ASN.
-  addResolution(domain: string, ip: string, opts: { risk?: number; asn?: string; asName?: string; firstSeen?: string; lastSeen?: string } = {}) {
-    const d = domain ? this.addEntity("domain", domain, { riskScore: opts.risk, firstSeen: opts.firstSeen, lastSeen: opts.lastSeen }) : null;
-    const i = ip ? this.addEntity("ip", ip, { asn: opts.asn, asName: opts.asName, firstSeen: opts.firstSeen, lastSeen: opts.lastSeen }) : null;
+  addResolution(
+    domain: string,
+    ip: string,
+    opts: { risk?: number; asn?: string; asName?: string; firstSeen?: string; lastSeen?: string; count?: number } = {},
+  ) {
+    const seen = { firstSeen: opts.firstSeen, lastSeen: opts.lastSeen, seenCount: opts.count };
+    const d = domain ? this.addEntity("domain", domain, { riskScore: opts.risk, ...seen }) : null;
+    const i = ip ? this.addEntity("ip", ip, { asn: opts.asn, asName: opts.asName, ...seen }) : null;
     if (d && i) this.addRel(d, "resolves-to", i);
     if (i && opts.asn) {
-      const a = this.addEntity("asn", opts.asn, { asName: opts.asName });
+      const a = this.addEntity("asn", opts.asn, { asName: opts.asName, ...seen });
       this.addRel(i, "belongs-to", a);
     }
     return { d, i };
@@ -532,17 +552,17 @@ function parseGenericRows(rows: any[], gb: GraphBuilder) {
     const risk = clampRisk(Number(pick(row, ["answer_risk_score", "query_risk_score", "risk", "score"])) || 0);
     const firstSeenRaw = pick(row, ["first_seen", "firstSeen", "first", "date", "timestamp"]);
     const lastSeenRaw = pick(row, ["last_seen", "lastSeen", "last"]);
+    const count = Number(pick(row, ["count", "seen_count", "times_seen", "hits", "occurrences"])) || undefined;
+    const seen = {
+      firstSeen: firstSeenRaw ? String(firstSeenRaw) : undefined,
+      lastSeen: lastSeenRaw ? String(lastSeenRaw) : undefined,
+      seenCount: count,
+    };
     if (domain || ip) {
-      gb.addResolution(domain ? String(domain) : "", ip ? String(ip) : "", {
-        asn,
-        asName,
-        risk,
-        firstSeen: firstSeenRaw ? String(firstSeenRaw) : undefined,
-        lastSeen: lastSeenRaw ? String(lastSeenRaw) : undefined,
-      });
+      gb.addResolution(domain ? String(domain) : "", ip ? String(ip) : "", { asn, asName, risk, ...seen, count });
     }
-    if (hash) gb.addEntity("hash", String(hash));
-    if (url) gb.addEntity("url", String(url));
+    if (hash) gb.addEntity("hash", String(hash), seen);
+    if (url) gb.addEntity("url", String(url), seen);
   }
 }
 
@@ -895,8 +915,9 @@ export function mergeGraphs(graphs: ThreatGraph[]): ThreatGraph {
       existing.riskScore = Math.max(existing.riskScore, e.riskScore);
       existing.asn = existing.asn || e.asn;
       existing.asName = existing.asName || e.asName;
-      existing.firstSeen = existing.firstSeen || e.firstSeen;
-      existing.lastSeen = existing.lastSeen || e.lastSeen;
+      existing.firstSeen = earliest(existing.firstSeen, e.firstSeen);
+      existing.lastSeen = latest(existing.lastSeen, e.lastSeen);
+      existing.seenCount = (existing.seenCount ?? 0) + (e.seenCount ?? 0) || undefined;
       for (const f of e.feeds) if (!existing.feeds.includes(f)) existing.feeds.push(f);
     }
     for (const r of g.relationships) {

@@ -176,6 +176,7 @@ export interface Entity {
   asName?: string;
   firstSeen?: string;
   lastSeen?: string;
+  seenCount?: number; // total sightings across records (row `count` when provided, else 1 per record)
   matched?: boolean; // present in more than one feed (computed on merge)
   zone?: Zone; // environment classification (auto + manual override)
   isBridge?: boolean; // connects two different known zones = a pivot point

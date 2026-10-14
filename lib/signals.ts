@@ -25,7 +25,7 @@ export const SIGNAL_DESC: Record<Signal, string> = {
   match: "Same indicator reported by 2+ feeds",
   overlap: "Shares a link that 2+ feeds agree on, or shares infrastructure",
   pivot: "Connects two different environments",
-  sequence: "Has a place in time relative to what it's linked to",
+  sequence: "Its record: first seen, times seen, what it connects to and from",
 };
 
 export const SIGNAL_COLOR: Record<Signal, string> = {
@@ -42,12 +42,25 @@ export interface OverlapItem {
   feeds: string[];
 }
 
+export interface SequenceLink {
+  id: string;
+  value: string;
+  label: string; // relationship label, e.g. "resolves to"
+  firstSeen?: string;
+  seenCount?: number;
+}
+
+// The record of an indicator over time: when it was first seen, how often,
+// where it connects to (outbound), and what connects to it (inbound).
+// Links are ordered chronologically by their own first-seen date.
 export interface SequenceInfo {
+  firstSeen?: string;
+  lastSeen?: string;
+  seenCount?: number;
   rank: number; // 1-based chronological position among self + timed neighbors
   total: number;
-  firstSeen: string;
-  before?: { id: string; value: string; at: string }; // nearest earlier neighbor
-  after?: { id: string; value: string; at: string }; // nearest later neighbor
+  connectsTo: SequenceLink[];
+  connectedFrom: SequenceLink[];
 }
 
 export interface EntitySignals {
@@ -69,16 +82,25 @@ export function buildSignals(graph: ThreatGraph): SignalIndex {
   const byId = new Map(graph.entities.map((e) => [e.id, e]));
   const neighbors = new Map<string, Set<string>>();
   const overlaps = new Map<string, OverlapItem[]>();
+  const outbound = new Map<string, Map<string, string>>(); // self -> (target -> label)
+  const inbound = new Map<string, Map<string, string>>(); // self -> (source -> label)
 
   const link = (a: string, b: string) => {
     let set = neighbors.get(a);
     if (!set) neighbors.set(a, (set = new Set()));
     set.add(b);
   };
+  const directed = (map: Map<string, Map<string, string>>, self: string, other: string, label: string) => {
+    let m = map.get(self);
+    if (!m) map.set(self, (m = new Map()));
+    if (!m.has(other)) m.set(other, label);
+  };
 
   for (const r of graph.relationships) {
     link(r.source, r.target);
     link(r.target, r.source);
+    directed(outbound, r.source, r.target, EDGE_KIND_LABEL[r.kind]);
+    directed(inbound, r.target, r.source, EDGE_KIND_LABEL[r.kind]);
     const corroborated = r.matched || r.feeds.length > 1;
     if (!corroborated && !CORRELATION_EDGES.has(r.kind)) continue;
     for (const [self, other] of [
@@ -111,32 +133,40 @@ export function buildSignals(graph: ThreatGraph): SignalIndex {
     let sequence: SequenceInfo | null = null;
     const selfT = ts(e.firstSeen);
     if (!Number.isNaN(selfT) && near) {
-      const timed: { id: string; value: string; t: number; at: string }[] = [];
-      for (const id of near) {
-        const n = byId.get(id);
-        const t = ts(n?.firstSeen);
-        if (n && !Number.isNaN(t)) timed.push({ id, value: n.value, t, at: n.firstSeen! });
-      }
-      if (timed.length > 0) {
-        let earlier: (typeof timed)[number] | undefined;
-        let later: (typeof timed)[number] | undefined;
-        let rank = 1;
-        for (const n of timed) {
-          if (n.t < selfT) {
-            rank++;
-            if (!earlier || n.t > earlier.t) earlier = n;
-          } else if (n.t > selfT && (!later || n.t < later.t)) {
-            later = n;
-          }
+      const toLinks = (map: Map<string, string> | undefined): SequenceLink[] => {
+        if (!map) return [];
+        const out: SequenceLink[] = [];
+        for (const [id, label] of map) {
+          const n = byId.get(id);
+          if (n) out.push({ id, value: n.value, label, firstSeen: n.firstSeen, seenCount: n.seenCount });
         }
-        sequence = {
-          rank,
-          total: timed.length + 1,
-          firstSeen: e.firstSeen!,
-          before: earlier && { id: earlier.id, value: earlier.value, at: earlier.at },
-          after: later && { id: later.id, value: later.value, at: later.at },
-        };
+        return out.sort((a, b) => {
+          const ta = ts(a.firstSeen);
+          const tb = ts(b.firstSeen);
+          if (Number.isNaN(ta)) return Number.isNaN(tb) ? 0 : 1;
+          if (Number.isNaN(tb)) return -1;
+          return ta - tb;
+        });
+      };
+
+      let rank = 1;
+      let total = 1;
+      for (const id of near) {
+        const t = ts(byId.get(id)?.firstSeen);
+        if (Number.isNaN(t)) continue;
+        total++;
+        if (t < selfT) rank++;
       }
+
+      sequence = {
+        firstSeen: e.firstSeen,
+        lastSeen: e.lastSeen,
+        seenCount: e.seenCount,
+        rank,
+        total,
+        connectsTo: toLinks(outbound.get(e.id)),
+        connectedFrom: toLinks(inbound.get(e.id)),
+      };
     }
 
     index.set(e.id, {

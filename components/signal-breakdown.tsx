@@ -7,6 +7,7 @@ import {
   SIGNAL_LABEL,
   SIGNAL_ORDER,
   type EntitySignals,
+  type SequenceLink,
   type Signal,
 } from "@/lib/signals";
 
@@ -16,6 +17,7 @@ interface SignalBreakdownProps {
 }
 
 const MAX_OVERLAPS = 6;
+const MAX_LINKS = 8;
 
 function shortDate(value: string): string {
   const t = Date.parse(value);
@@ -84,25 +86,53 @@ export function SignalBreakdown({ signals, onJump }: SignalBreakdownProps) {
         );
       case "sequence": {
         const s = signals.sequence!;
+        const linkList = (title: string, links: SequenceLink[]) =>
+          links.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-muted-foreground/80">
+                {title} ({links.length})
+              </span>
+              <ol className="flex flex-col gap-0.5 border-l border-border pl-2">
+                {links.slice(0, MAX_LINKS).map((l) => (
+                  <li key={l.id} className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-mono text-muted-foreground/80 tabular-nums">
+                      {l.firstSeen ? shortDate(l.firstSeen) : "\u2014"}
+                    </span>
+                    <span>{l.label}</span>
+                    {jump(l.id, l.value)}
+                    {l.seenCount ? (
+                      <span className="text-muted-foreground/80">&times;{l.seenCount.toLocaleString()}</span>
+                    ) : null}
+                  </li>
+                ))}
+                {links.length > MAX_LINKS && (
+                  <li className="text-muted-foreground/80">+{links.length - MAX_LINKS} more</li>
+                )}
+              </ol>
+            </div>
+          );
         return (
-          <span className="flex flex-col gap-0.5">
-            <span>
-              <span className="text-foreground">
-                #{s.rank} of {s.total}
-              </span>{" "}
-              among its linked entities &middot; first seen {shortDate(s.firstSeen)}
+          <div className="flex flex-col gap-1.5">
+            <dl className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col">
+                <dt className="text-muted-foreground/80">First seen</dt>
+                <dd className="font-mono text-foreground">{s.firstSeen ? shortDate(s.firstSeen) : "\u2014"}</dd>
+              </div>
+              <div className="flex flex-col">
+                <dt className="text-muted-foreground/80">Last seen</dt>
+                <dd className="font-mono text-foreground">{s.lastSeen ? shortDate(s.lastSeen) : "\u2014"}</dd>
+              </div>
+              <div className="flex flex-col">
+                <dt className="text-muted-foreground/80">Times seen</dt>
+                <dd className="font-mono text-foreground">{s.seenCount ? s.seenCount.toLocaleString() : "\u2014"}</dd>
+              </div>
+            </dl>
+            <span className="text-muted-foreground/80">
+              #{s.rank} of {s.total} to appear among its linked entities
             </span>
-            {s.before && (
-              <span>
-                After {jump(s.before.id, s.before.value)} ({shortDate(s.before.at)})
-              </span>
-            )}
-            {s.after && (
-              <span>
-                Before {jump(s.after.id, s.after.value)} ({shortDate(s.after.at)})
-              </span>
-            )}
-          </span>
+            {linkList("Connects to", s.connectsTo)}
+            {linkList("Connected from", s.connectedFrom)}
+          </div>
         );
       }
     }
