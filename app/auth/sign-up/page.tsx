@@ -36,12 +36,15 @@ function SignUpForm() {
       return;
     }
     setIsLoading(true);
-    const base =
-      process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ?? `${window.location.origin}/auth/callback`;
+    // The v0 dev redirect URL must be passed verbatim: Supabase only honors allow-listed
+    // redirect URLs, and appending a query string makes it fall back to the Site URL (localhost).
+    const devRedirect = process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL;
+    const emailRedirectTo =
+      devRedirect ?? `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
     const { error } = await createClient().auth.signUp({
       email,
       password,
-      options: { emailRedirectTo: `${base}?next=${encodeURIComponent(next)}` },
+      options: { emailRedirectTo },
     });
     setIsLoading(false);
     if (error) {
