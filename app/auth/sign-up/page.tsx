@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AuthShell } from "@/components/auth-shell";
+import { createConfirmedAccount } from "./actions";
 
 function signUpErrorMessage(error: unknown): string {
   const { code, status } = (error ?? {}) as { code?: string; status?: number };
@@ -36,22 +37,20 @@ function SignUpForm() {
       return;
     }
     setIsLoading(true);
-    // The v0 dev redirect URL must be passed verbatim: Supabase only honors allow-listed
-    // redirect URLs, and appending a query string makes it fall back to the Site URL (localhost).
-    const devRedirect = process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL;
-    const emailRedirectTo =
-      devRedirect ?? `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
-    const { error } = await createClient().auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo },
-    });
+    const result = await createConfirmedAccount(email, password);
+    if (!result.ok) {
+      setIsLoading(false);
+      setError(result.error);
+      return;
+    }
+    const { error } = await createClient().auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
     setIsLoading(false);
     if (error) {
       setError(signUpErrorMessage(error));
       return;
     }
-    router.push("/auth/sign-up-success");
+    router.push(next);
+    router.refresh();
   };
 
   return (
