@@ -365,9 +365,9 @@ export const NetworkGraph = forwardRef<NetworkGraphHandle, NetworkGraphProps>(
       // between environments stand out from same-zone links.
       if (e.crossZone) ctx.setLineDash([5, 3]);
       ctx.strokeStyle =
-        e.color + (focused ? "" : focusId ? "18" : e.crossZone ? "cc" : e.matched ? "70" : "40");
+        e.color + (focused ? "" : focusId ? "33" : e.crossZone ? "f0" : e.matched ? "d0" : "a8");
       // Edge thickness encodes confidence (spec): stronger links draw heavier.
-      const confWidth = 0.75 + (e.confidence / 100) * 2.75; // 0.75 .. 3.5
+      const confWidth = 1.1 + (e.confidence / 100) * 2.9; // 1.1 .. 4.0
       ctx.lineWidth = e.crossZone ? Math.max(2, confWidth) : confWidth;
       ctx.stroke();
       ctx.setLineDash([]);
