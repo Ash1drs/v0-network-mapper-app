@@ -17,6 +17,7 @@ import {
   type Signal,
 } from "@/lib/signals";
 import Link from "next/link";
+import { AnalysisError, analyzeGraphs } from "@/lib/analyze";
 import { SaveReportDialog } from "@/components/save-report-dialog";
 import {
   ChevronDown,
@@ -81,16 +82,9 @@ export default function Page() {
     setError(null);
     setSelected(null);
     try {
-      const res = await fetch("/api/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ graphs }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Analysis failed");
-        return;
-      }
+      // Yield a frame so the loading state paints before heavy work starts.
+      await new Promise((r) => setTimeout(r, 0));
+      const data = analyzeGraphs(graphs);
       setRawGraph(data.graph);
       setFeedOrder(data.feedOrder);
       setStats(data.stats);
@@ -103,8 +97,9 @@ export default function Page() {
         signals: new Set(),
         showCA: false,
       });
-    } catch {
-      setError("Failed to analyze data");
+    } catch (err) {
+      console.error("analysis failed:", err);
+      setError(err instanceof AnalysisError ? err.message : "Failed to analyze data");
     } finally {
       setIsLoading(false);
     }
